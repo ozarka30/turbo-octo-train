@@ -17,6 +17,7 @@ It is three parts glued together:
 | Voice  | Speaks Japanese and English                                 | `edge-tts` neural voices, cached to disk         |
 | Overlay | Shows the sentence and highlights the piece being spoken   | always-on-top tkinter window, synced to the audio |
 | Memory | Remembers what you have been taught, across sessions        | SQLite in `~/.jptutor/`, summarised into every lesson prompt |
+| Practice | Listens to you say the line and scores it               | local faster-whisper + pykakasi, no network              |
 
 ## Setup
 
@@ -86,6 +87,22 @@ You can also run the pipeline on saved screenshots: `jptutor image shot1.png sho
 Hotkeys are global, so they work while the game has focus. They need `pip install "jptutor[hotkey]"` (pynput); change them with `JPTUTOR_HOTKEY_MAP="skip=<ctrl>+s,pause=<f6>"` or turn them off with `--no-hotkeys`. Without pynput, `--manual` mode with Enter still works.
 
 The Japanese line is read aloud as soon as OCR has it, while Claude is still writing the lesson, so the wait is filled with the thing you most want to hear. `JPTUTOR_PRESPEAK=0` turns that off.
+
+### Speech practice: say it back
+
+Press F7 after a lesson (or set `--practice auto` to do it after every lesson) and the tutor says "Your turn", listens to your microphone until you stop talking, and tells you how close you were:
+
+- **Very close.** Every sound matched.
+- **Close. Listen to the piece that means "to go".** Then it plays that piece slowly, then the whole line.
+- **Not quite.** Same, with the piece that went furthest off.
+
+The overlay shows what it heard in kana and the match percentage. Everything runs locally: recording with `sounddevice`, recognition with `faster-whisper` (Japanese), kana conversion with `pykakasi`, so no audio leaves your machine and there is no Claude call. Install it with:
+
+```bash
+pip install "jptutor[speech]"      # or "jptutor[all]" for hotkeys too
+```
+
+The first practice downloads the recognition model (about 500 MB for `small`). `JPTUTOR_WHISPER_MODEL=base` is faster and smaller, `medium` more accurate. If it never hears you, lower `JPTUTOR_MIC_THRESHOLD` (default 0.012); `jptutor doctor` shows which microphone it will use.
 
 ### Voices
 
@@ -160,6 +177,9 @@ All settings are environment variables (see `.env.example`); the common ones als
 | `JPTUTOR_HOTKEY_MAP`       |                      | e.g. `skip=<f9>,pause=<f10>,repeat=<f11>,capture=<f8>,practice=<f7>` |
 | `JPTUTOR_AUTO_REGION`      | `0`                  | Let the first OCR result pick the dialogue box       |
 | `JPTUTOR_REPEAT_SKIP_AFTER`| `3`                  | Replay a known line until seen this many times       |
+| `JPTUTOR_PRACTICE`         | `hotkey`             | `off`, `hotkey` (F7), or `auto` (after every lesson) |
+| `JPTUTOR_WHISPER_MODEL`    | `small`              | faster-whisper size for practice                     |
+| `JPTUTOR_MIC_THRESHOLD`    | `0.012`              | Loudness that counts as speech                       |
 | `JPTUTOR_OVERLAY`          | `1`                  | `0` to disable the highlight window                  |
 | `JPTUTOR_OVERLAY_GEOMETRY` | bottom centre        | `x,y,width,height` of the overlay                    |
 | `JPTUTOR_OVERLAY_FONT_SIZE`| `34`                 | Japanese font size in the overlay                    |
@@ -206,6 +226,7 @@ jptutor/
   script.py         Lesson -> ordered Utterances (the Paul Noble pacing) with highlight spans
   display.py        Display interface, console highlighter, speaker wrapper that syncs them
   controls.py       skip / pause / repeat / capture / practice flags and global hotkeys
+  practice.py       speech practice: mic -> whisper -> kana -> diff -> spoken feedback
   memory.py         long-term memory (SQLite): sentences, pieces, patterns, tiered summary, usage log, Anki export
   cache.py          OCR results cached on disk by screenshot hash
   usage.py          token and cost accounting; the summary printed at exit

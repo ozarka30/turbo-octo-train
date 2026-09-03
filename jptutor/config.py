@@ -40,7 +40,10 @@ class Settings:
     hotkeys: bool = True
     hotkey_spec: str = ""  # e.g. "skip=<f9>,pause=<f10>"
     auto_region: bool = False  # let the first OCR result pick the dialogue box
-    repeat_skip_after: int = 3  # a known line is replayed until seen this many times, then skipped
+    repeat_skip_after: int = 3
+    practice: str = "hotkey"  # off | hotkey (F7 only) | auto (after every full lesson)
+    whisper_model: str = "small"  # faster-whisper size: tiny | base | small | medium
+    mic_threshold: float = 0.012  # a known line is replayed until seen this many times, then skipped
 
     region: Optional[Region] = None
     poll_interval: float = 0.5
@@ -80,6 +83,9 @@ class Settings:
         s.hotkey_spec = e.get("JPTUTOR_HOTKEY_MAP", s.hotkey_spec)
         s.auto_region = e.get("JPTUTOR_AUTO_REGION", "0") in ("1", "true", "yes", "on")
         s.repeat_skip_after = int(e.get("JPTUTOR_REPEAT_SKIP_AFTER", s.repeat_skip_after))
+        s.practice = e.get("JPTUTOR_PRACTICE", s.practice)
+        s.whisper_model = e.get("JPTUTOR_WHISPER_MODEL", s.whisper_model)
+        s.mic_threshold = float(e.get("JPTUTOR_MIC_THRESHOLD", s.mic_threshold))
         if e.get("JPTUTOR_REGION"):
             s.region = parse_region(e["JPTUTOR_REGION"])
         s.poll_interval = float(e.get("JPTUTOR_POLL_INTERVAL", s.poll_interval))

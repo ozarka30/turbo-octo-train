@@ -80,8 +80,10 @@ class TutorPipeline:
         memory: Optional[Memory] = None,
         stop: Optional[threading.Event] = None,
         controls: Optional[Controls] = None,
+        practice=None,
     ):
         self.tutor = tutor
+        self.practice = practice  # a practice.Practice, or None
         self.memory = memory
         self.repeat = settings.repeat
         self.display = display or NullDisplay()
@@ -154,7 +156,25 @@ class TutorPipeline:
             )
         self._speak(lesson, full_breakdown=self.full_breakdown, skip_intro=prespeak)
         self._remember(lesson, japanese, speaker)
+        if self.practice and self.settings.practice == "auto" and self.full_breakdown and not self.stop.is_set() and not self.controls.skip.is_set():
+            self.practice_last()
         return lesson
+
+    def practice_last(self) -> bool:
+        """Let the learner say the last sentence and hear how close it was (hotkey / auto)."""
+        if self.practice is None or self.last_lesson is None:
+            return False
+        self.controls.begin_lesson()
+        try:
+            self.practice.run(self.last_lesson, self.speaker, self.display)
+        except FatalError:
+            raise
+        except Exception:
+            log.exception("practice failed")
+            self.display.show_error("Practice failed; is the microphone available?")
+        finally:
+            self.controls.skip.clear()
+        return True
 
     def repeat_last(self, *, full_breakdown: bool = True) -> bool:
         """Speak the most recent lesson again (hotkey)."""

@@ -26,6 +26,8 @@ class Display(Protocol):
 
     def show_error(self, message: str) -> None: ...
 
+    def show_practice(self, heard_kana: str, score: Optional[float], *, listening: bool) -> None: ...
+
 
 class ConsoleDisplay:
     """Text rendering of the highlight, used by --dry-run and tests."""
@@ -59,6 +61,13 @@ class ConsoleDisplay:
         self.errors.append(message)
         print(f"  !! {message}", file=self.out)
 
+    def show_practice(self, heard_kana: str, score: Optional[float], *, listening: bool) -> None:
+        if listening:
+            print("  🎤 listening...", file=self.out)
+        else:
+            pct = f"{int((score or 0) * 100)}%"
+            print(f"  🎤 heard: {heard_kana or '(nothing)'}  match {pct}", file=self.out)
+
 
 class NullDisplay:
     def show_sentence(self, japanese: str) -> None: ...
@@ -70,6 +79,8 @@ class NullDisplay:
     def finish(self) -> None: ...
 
     def show_error(self, message: str) -> None: ...
+
+    def show_practice(self, heard_kana: str, score: Optional[float], *, listening: bool) -> None: ...
 
 
 class DisplaySpeaker:

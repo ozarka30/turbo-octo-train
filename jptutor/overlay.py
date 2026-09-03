@@ -119,6 +119,9 @@ class Overlay:
     def show_error(self, message: str) -> None:
         self._q.put(("error", message))
 
+    def show_practice(self, heard_kana: str, score, *, listening: bool) -> None:
+        self._q.put(("practice", heard_kana, score, listening))
+
     def close(self) -> None:
         self.stop_event.set()
         self._q.put(("close",))
@@ -187,6 +190,17 @@ class Overlay:
             self._highlight(None)
             self.reading.configure(text="")
             self.caption.configure(text="")
+        elif kind == "practice":
+            _, heard, score, listening = event
+            if listening:
+                self._highlight((0, len(getattr(self, "_sentence", ""))))
+                self.reading.configure(text="🎤 your turn", fg="#7ee787")
+                self.caption.configure(text="")
+            else:
+                pct = int((score or 0) * 100)
+                colour = "#7ee787" if pct >= 90 else ("#ffd23f" if pct >= 70 else "#ff7b72")
+                self.reading.configure(text=f"heard: {heard or '…'}   {pct}%", fg=colour)
+                self.root.after(6000, lambda: self.reading.configure(fg=HL_BG))
         elif kind == "error":
             self.reading.configure(text="")
             self.caption.configure(text=event[1], fg="#ff7b72")
@@ -196,7 +210,9 @@ class Overlay:
         t = self.text
         t.configure(state="normal")
         t.delete("1.0", "end")
-        t.insert("1.0", sentence, ("center",))
+        # A leading space keeps a highlight that starts at character 0 from painting the
+        # centred line's left padding; spans are offset by one in _highlight.
+        t.insert("1.0", " " + sentence + " ", ("center",))
         t.configure(fg=DIM if dim else FG, height=max(1, min(3, 1 + len(sentence) // 22)))
         t.configure(state="disabled")
 
@@ -205,7 +221,7 @@ class Overlay:
         t.tag_remove("hl", "1.0", "end")
         if span:
             a, b = span
-            t.tag_add("hl", f"1.0+{a}c", f"1.0+{b}c")
+            t.tag_add("hl", f"1.0+{a + 1}c", f"1.0+{b + 1}c")
 
     def _drag_start(self, e) -> None:
         self.root.focus_force()  # so Escape reaches us on platforms that never focus borderless windows

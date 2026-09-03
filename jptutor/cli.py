@@ -55,6 +55,8 @@ def _settings(args) -> Settings:
         s.hotkeys = False
     if getattr(args, "auto_region", False):
         s.auto_region = True
+    if getattr(args, "practice", None):
+        s.practice = args.practice
     return s
 
 
@@ -75,6 +77,29 @@ def _controls(settings: Settings):
         if listener is None:
             print("hotkeys unavailable (pip install pynput); use --manual / Enter instead.", file=sys.stderr)
     return controls
+
+
+def _practice(settings: Settings, offline: bool = False):
+    """A Practice runner when speech deps are installed and practice is not off; else None."""
+    if settings.practice == "off":
+        return None
+    from . import practice as pr
+
+    ok, why = pr.available()
+    if not ok:
+        if settings.practice == "auto":
+            print(f"speech practice unavailable: {why}", file=sys.stderr)
+        return None
+    try:
+        p = pr.Practice(pr.MicRecorder(settings.mic_threshold), pr.WhisperTranscriber(settings.whisper_model))
+    except Exception as e:  # no input device, PortAudio missing
+        print(f"speech practice unavailable: {e}", file=sys.stderr)
+        return None
+    if settings.practice == "auto":
+        import threading
+
+        threading.Thread(target=p.transcriber.load, name="jptutor-whisper", daemon=True).start()
+    return p
 
 
 def _memory(settings: Settings):
@@ -194,7 +219,7 @@ def cmd_watch(args) -> int:
 
         speaker = _speaker(settings, args)
         controls = _controls(settings)
-        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings), stop=stop, controls=controls)
+        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings), stop=stop, controls=controls, practice=_practice(settings))
         worker = FrameWorker(pipe, settings.max_queue).start()
         grabber = ScreenGrabber(settings.region)
         controls.actions["capture"] = lambda: worker.submit(grabber.grab())
@@ -344,6 +369,20 @@ def cmd_doctor(args) -> int:
     except ImportError:
         row("edge-tts", False, "pip install edge-tts")
 
+    print("Speech practice")
+    try:
+        from . import practice as pr
+
+        ok_sp, why = pr.available()
+        row("speech deps", True, why if ok_sp else why + " (optional)")
+        if ok_sp:
+            import sounddevice as sd
+
+            dev = sd.query_devices(kind="input")
+            row("microphone", True, dev["name"])
+    except Exception as e:
+        row("microphone", False, f"{type(e).__name__}: {e}")
+
     print("Screen")
     try:
         import mss
@@ -421,6 +460,7 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--no-memory", action="store_true", help="do not read or write long-term memory")
         sp.add_argument("--tts", choices=["auto", "edge", "system"], help="voice backend: edge-tts, the OS voice, or auto (edge with system fallback)")
         sp.add_argument("--no-hotkeys", action="store_true", help="do not register global hotkeys")
+        sp.add_argument("--practice", choices=["off", "hotkey", "auto"], help="speech practice: only on the hotkey (default), after every lesson, or off")
         sp.add_argument("--repeat", choices=["quick", "skip", "full"], help="line taught in an earlier session: quick replay (default), skip, or teach again")
         sp.add_argument("--offline", action="store_true", help="use a canned sample lesson instead of calling Claude (demo)")
         if capture:
