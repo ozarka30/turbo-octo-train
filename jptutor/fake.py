@@ -40,6 +40,6 @@ class FakeTutor:
         self.ocr_calls += 1
         return OcrResult(lines=self.ocr_lines)
 
-    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", history=()) -> Lesson:
+    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", knowledge: str = "") -> Lesson:
         self.teach_calls.append(japanese)
         return SAMPLE_LESSON.model_copy(update={"japanese": japanese})

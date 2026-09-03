@@ -129,8 +129,8 @@ class ClaudeCodeTutor:
         finally:
             path.unlink(missing_ok=True)
 
-    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", history: List[str] = ()) -> Lesson:
-        prompt = build_tutor_user(japanese, speaker=speaker, context=context, full_line=full_line, history=history)
+    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", knowledge: str = "") -> Lesson:
+        prompt = build_tutor_user(japanese, speaker=speaker, context=context, full_line=full_line, knowledge=knowledge)
         args = self._base_args(self.settings.tutor_model, self.settings.tutor_effort, Lesson.model_json_schema(), max_turns=4)
         # --json-schema output arrives through the StructuredOutput tool, so it must stay allowed;
         # everything else is removed so the lesson never touches files or the shell.

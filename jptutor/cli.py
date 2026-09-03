@@ -25,7 +25,19 @@ def _settings(args) -> Settings:
         s.backend = args.backend
     if getattr(args, "no_overlay", False):
         s.overlay = False
+    if getattr(args, "no_memory", False):
+        s.memory_path = None
+    if getattr(args, "repeat", None):
+        s.repeat = args.repeat
     return s
+
+
+def _memory(settings: Settings):
+    if settings.memory_path is None:
+        return None
+    from .memory import Memory
+
+    return Memory(settings.memory_path)
 
 
 def _run_with_display(args, settings: Settings, body):
@@ -66,7 +78,7 @@ def cmd_teach(args) -> int:
 
     def body(display):
         speaker = make_speaker(settings, "console" if args.dry_run else "edge")
-        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display)
+        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings))
         for sentence in args.sentence:
             print(f"\n== {sentence}")
             for lesson in pipe.teach_line(sentence):
@@ -88,7 +100,7 @@ def cmd_image(args) -> int:
 
     def body(display):
         speaker = make_speaker(settings, "console" if args.dry_run else "edge")
-        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display)
+        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings))
         for path in args.image:
             frame = Image.open(path)
             if settings.region:
@@ -114,7 +126,7 @@ def cmd_watch(args) -> int:
         print("warning: no --region given, capturing the whole primary monitor. Set JPTUTOR_REGION or --region x,y,w,h to the dialogue box for better results.", file=sys.stderr)
     def body(display):
         speaker = make_speaker(settings, "console" if args.dry_run else "edge")
-        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display)
+        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings))
         worker = FrameWorker(pipe, settings.max_queue).start()
         grabber = ScreenGrabber(settings.region)
 
@@ -135,7 +147,7 @@ def cmd_watch(args) -> int:
             except KeyboardInterrupt:
                 pass
         worker.stop()
-        print(f"\nbye. lines taught: {len(pipe.lessons)}, frames dropped: {worker.dropped}")
+        print(f"\nbye. lines taught: {len(pipe.lessons)}, replayed from memory: {pipe.replayed}, frames dropped: {worker.dropped}")
         return 0
 
     return _run_with_display(args, settings, body)
@@ -218,6 +230,9 @@ def cmd_doctor(args) -> int:
     except SystemExit as e:
         row("backend", False, str(e).splitlines()[0])
 
+    print("Memory")
+    row("memory", True, f"{settings.memory_path}" if settings.memory_path else "disabled")
+
     print("Audio")
     try:
         import pygame  # type: ignore  # noqa: F401
@@ -247,6 +262,47 @@ def cmd_doctor(args) -> int:
     return 0 if ok else 1
 
 
+def cmd_memory(args) -> int:
+    """Inspect, export, or clear long-term memory."""
+    import datetime as dt
+
+    settings = _settings(args)
+    if settings.memory_path is None:
+        print("memory is disabled (JPTUTOR_MEMORY=0)")
+        return 1
+    mem = _memory(settings)
+    what = args.what
+    if what == "stats":
+        st = mem.stats()
+        last = dt.datetime.fromtimestamp(st["last_lesson"]).strftime("%Y-%m-%d %H:%M") if st["last_lesson"] else "never"
+        print(f"memory file : {settings.memory_path}")
+        print(f"sentences   : {st['sentences']} distinct, {st['sentence_sightings']} sightings, last lesson {last}")
+        print(f"pieces      : {st['pieces']} total, {st['pieces_known']} known well (seen 3+ times)")
+        print(f"patterns    : {st['patterns']}")
+        if st["games"]:
+            print(f"games       : {', '.join(st['games'])}")
+    elif what == "vocab":
+        for r in mem.pieces(order=args.order, limit=args.limit):
+            tag = "known" if r["times_seen"] >= 3 else f"x{r['times_seen']}"
+            print(f"{r['japanese']:10} {r['reading']:12} {tag:6} {r['meaning']}")
+    elif what == "sentences":
+        for r in mem.sentences(limit=args.limit):
+            print(f"x{r['times_seen']:<3} {r['japanese']}  =  {r['english']}")
+    elif what == "prompt":
+        print(mem.summary().render())
+    elif what == "export":
+        out = Path(args.out or "jptutor-anki.txt")
+        n = mem.export_anki(out)
+        print(f"wrote {n} cards to {out} (Anki: File > Import, fields separated by tab, allow HTML)")
+    elif what == "forget":
+        if not args.yes:
+            print("this deletes everything the tutor remembers. Re-run with --yes to confirm.")
+            return 1
+        mem.forget()
+        print("memory cleared")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="jptutor", description="AI Japanese tutor for video games.")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -260,6 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--quick", action="store_true", help="Japanese + English only, skip the breakdown")
         sp.add_argument("--dry-run", action="store_true", help="print the lesson (with text highlighting) instead of speaking it")
         sp.add_argument("--no-overlay", action="store_true", help="do not show the on-screen highlight window")
+        sp.add_argument("--no-memory", action="store_true", help="do not read or write long-term memory")
+        sp.add_argument("--repeat", choices=["quick", "skip", "full"], help="line taught in an earlier session: quick replay (default), skip, or teach again")
         sp.add_argument("--offline", action="store_true", help="use a canned sample lesson instead of calling Claude (demo)")
         if capture:
             sp.add_argument("--region", help="x,y,width,height of the dialogue box")
@@ -287,6 +345,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("select-region", help="drag to select the dialogue box; prints JPTUTOR_REGION")
     sp.set_defaults(func=cmd_select_region)
+
+    sp = sub.add_parser("memory", help="inspect what the tutor remembers")
+    sp.add_argument("what", nargs="?", default="stats", choices=["stats", "vocab", "sentences", "prompt", "export", "forget"])
+    sp.add_argument("--limit", type=int, default=0)
+    sp.add_argument("--order", choices=["last_seen", "count", "first_seen"], default="last_seen")
+    sp.add_argument("--out", help="export: output file (default jptutor-anki.txt)")
+    sp.add_argument("--yes", action="store_true", help="forget: confirm deletion")
+    sp.set_defaults(func=cmd_memory)
 
     sp = sub.add_parser("doctor", help="check Claude access, audio, and screen capture")
     sp.add_argument("--backend", choices=["auto", "api", "claude-code"])

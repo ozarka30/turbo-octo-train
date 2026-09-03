@@ -41,7 +41,7 @@ def make_client(captured, body_text):
 def test_teach_request_shape_and_parsing():
     captured = {}
     tutor = ClaudeTutor(Settings(level="intermediate"), client=make_client(captured, SAMPLE_LESSON.model_dump_json()))
-    lesson = tutor.teach("学校に行きます。", speaker="ユウ", context="Pokemon", history=["学校 = school"])
+    lesson = tutor.teach("学校に行きます。", speaker="ユウ", context="Pokemon", knowledge="学校 = school")
 
     assert lesson.japanese == SAMPLE_LESSON.japanese and len(lesson.chunks) == 3
     body = captured["json"]

@@ -45,6 +45,9 @@ class Settings:
     overlay_font_size: int = 34
     overlay_opacity: float = 0.88
 
+    memory_path: Optional[Path] = field(default_factory=lambda: Path.home() / ".jptutor" / "memory.sqlite")
+    repeat: str = "quick"  # what to do with a line taught in an earlier session: quick | skip | full
+
     cache_dir: Path = field(default_factory=lambda: Path(".jptutor-cache"))
     max_queue: int = 3
     remember_lines: int = 200
@@ -70,6 +73,10 @@ class Settings:
             s.overlay_geometry = parse_region(e["JPTUTOR_OVERLAY_GEOMETRY"])
         s.overlay_font_size = int(e.get("JPTUTOR_OVERLAY_FONT_SIZE", s.overlay_font_size))
         s.overlay_opacity = float(e.get("JPTUTOR_OVERLAY_OPACITY", s.overlay_opacity))
+        mem = e.get("JPTUTOR_MEMORY")
+        if mem is not None:
+            s.memory_path = None if mem in ("0", "", "off", "none") else Path(mem).expanduser()
+        s.repeat = e.get("JPTUTOR_REPEAT", s.repeat)
         if e.get("JPTUTOR_CACHE_DIR"):
             s.cache_dir = Path(e["JPTUTOR_CACHE_DIR"])
         return s

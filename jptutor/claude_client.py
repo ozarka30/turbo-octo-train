@@ -26,7 +26,7 @@ class RefusedError(RuntimeError):
 class TutorBackend(Protocol):
     def ocr(self, image: Image.Image) -> OcrResult: ...
 
-    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", history: List[str] = ()) -> Lesson: ...
+    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", knowledge: str = "") -> Lesson: ...
 
 
 def _png_b64(image: Image.Image) -> str:
@@ -88,9 +88,9 @@ class ClaudeTutor:
         speaker: str = "",
         context: str = "",
         full_line: str = "",
-        history: List[str] = (),
+        knowledge: str = "",
     ) -> Lesson:
-        user = build_tutor_user(japanese, speaker=speaker, context=context, full_line=full_line, history=history)
+        user = build_tutor_user(japanese, speaker=speaker, context=context, full_line=full_line, knowledge=knowledge)
         response = self.client.beta.messages.parse(
             model=self.settings.tutor_model,
             max_tokens=16000,

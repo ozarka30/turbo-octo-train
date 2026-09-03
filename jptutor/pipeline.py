@@ -14,6 +14,7 @@ from PIL import Image
 from .claude_client import TutorBackend
 from .config import Settings
 from .display import Display, DisplaySpeaker, NullDisplay
+from .memory import Memory
 from .lesson import Lesson, OcrLine, contains_japanese, split_sentences
 from .script import build_script
 from .tts import Speaker
@@ -73,16 +74,20 @@ class TutorPipeline:
         context: str = "",
         full_breakdown: bool = True,
         display: Optional[Display] = None,
+        memory: Optional[Memory] = None,
     ):
         self.tutor = tutor
+        self.memory = memory
+        self.repeat = settings.repeat
         self.display = display or NullDisplay()
         self.speaker = DisplaySpeaker(speaker, self.display)
         self.settings = settings
         self.context = context
         self.full_breakdown = full_breakdown
         self.seen = SeenLines(settings.remember_lines)
-        self.history: List[str] = []
+        self.history: List[str] = []  # this session only, used when there is no memory
         self.lessons: List[Lesson] = []
+        self.replayed = 0
 
     # -- single-line path ----------------------------------------------------
     def teach_text(self, japanese: str, speaker: str = "", full_line: str = "") -> Optional[Lesson]:
@@ -90,18 +95,45 @@ class TutorPipeline:
         if not self.seen.add(japanese):
             log.info("already taught, skipping: %s", japanese)
             return None
+
+        # A line from an earlier session: replay from memory or skip, no Claude call.
+        stored = self.memory.lookup_sentence(japanese) if self.memory else None
+        if stored is not None and self.repeat != "full":
+            if self.repeat == "skip":
+                log.info("known line, skipping: %s", japanese)
+                self.memory.touch_sentence(japanese)
+                return None
+            log.info("known line (seen %d times), quick replay: %s", stored.times_seen, japanese)
+            self.memory.touch_sentence(japanese)
+            self.replayed += 1
+            self._speak(stored.lesson, full_breakdown=False)
+            return stored.lesson
+
         lesson = self.tutor.teach(
-            japanese, speaker=speaker, context=self.context, full_line=full_line, history=self.history[-60:]
+            japanese, speaker=speaker, context=self.context, full_line=full_line, knowledge=self._knowledge()
         )
         self.lessons.append(lesson)
-        self.history.append(f"Sentence: {lesson.japanese} = {lesson.english}")
-        self.history.extend(f"  {c.japanese} ({c.reading}) = {c.meaning}" for c in lesson.chunks)
+        if self.memory:
+            self.memory.record_lesson(lesson, game=self.context, speaker=speaker)
+        else:
+            self.history.append(f"{lesson.japanese} = {lesson.english}")
+            self.history.extend(f"  {c.japanese} ({c.reading}) = {c.meaning}" for c in lesson.chunks)
+        self._speak(lesson, full_breakdown=self.full_breakdown)
+        return lesson
+
+    def _knowledge(self) -> str:
+        if self.memory:
+            return self.memory.summary().render()
+        if not self.history:
+            return ""
+        return "Taught this session, oldest first:\n" + "\n".join(self.history[-60:])
+
+    def _speak(self, lesson: Lesson, *, full_breakdown: bool) -> None:
         self.display.show_lesson(lesson)
         try:
-            self.speaker.speak_all(build_script(lesson, full_breakdown=self.full_breakdown))
+            self.speaker.speak_all(build_script(lesson, full_breakdown=full_breakdown))
         finally:
             self.display.finish()
-        return lesson
 
     def teach_line(self, text: str, speaker: str = "") -> List[Lesson]:
         """Teach a whole dialogue box, one sentence at a time, with the box as context."""

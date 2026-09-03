@@ -36,7 +36,7 @@ def envelope(payload):
 
 def test_teach_builds_headless_command(tmp_path, monkeypatch):
     tutor, calls = make(tmp_path, monkeypatch, envelope(SAMPLE_LESSON.model_dump()))
-    lesson = tutor.teach("学校に行きます。", speaker="ユウ", context="Pokemon", history=["学校 = school"])
+    lesson = tutor.teach("学校に行きます。", speaker="ユウ", context="Pokemon", knowledge="学校 = school")
     assert lesson.english == SAMPLE_LESSON.english
 
     args, kw = calls[0]

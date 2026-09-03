@@ -16,6 +16,7 @@ It is three parts glued together:
 | AI     | Translates and writes the lesson                            | Claude Opus 5 with structured output (a `Lesson` JSON) |
 | Voice  | Speaks Japanese and English                                 | `edge-tts` neural voices, cached to disk         |
 | Overlay | Shows the sentence and highlights the piece being spoken   | always-on-top tkinter window, synced to the audio |
+| Memory | Remembers what you have been taught, across sessions        | SQLite in `~/.jptutor/`, summarised into every lesson prompt |
 
 ## Setup
 
@@ -82,11 +83,33 @@ While a lesson plays, a small always-on-top window shows the sentence with the c
 - Run the game in windowed or borderless mode. An exclusive full-screen game draws over every other window, so the overlay will not show on top of it.
 - It needs tkinter, which ships with python.org and Windows Python; on Debian or Ubuntu install `python3-tk`.
 
+### Memory
+
+The tutor keeps a long-term memory in `~/.jptutor/memory.sqlite`: every sentence with its full lesson, every piece (word or particle) with how many times it has come up, and every pattern taught. Before each new lesson, a summary goes to Claude in tiers, so the tutor behaves like someone who remembers you:
+
+- **Known well** (a piece seen 3 or more times): used without explanation.
+- **Met once or twice**: a few words of reminder, "ni again, pointing where you are heading".
+- **Patterns already taught**: referred back to, not re-taught.
+- Anything else is new and gets the full treatment.
+
+Lines you met in an earlier session are handled by `--repeat` / `JPTUTOR_REPEAT`: `quick` (default) replays Japanese and English from memory with no Claude call, `skip` says nothing, `full` teaches it again.
+
+```bash
+jptutor memory              # stats
+jptutor memory vocab        # every piece with its count (--order count, --limit 50)
+jptutor memory sentences    # every line taught
+jptutor memory prompt       # exactly what the tutor is told about you
+jptutor memory export       # Anki-importable tab file (--out deck.txt)
+jptutor memory forget --yes # start over
+```
+
+`--no-memory` or `JPTUTOR_MEMORY=0` runs a session without reading or writing it; `JPTUTOR_MEMORY=/path/file.sqlite` keeps separate memories, for example one per game.
+
 ### How a session behaves
 
 - Lines already taught are remembered and skipped when the game re-renders them.
 - A dialogue box with several sentences is taught one sentence at a time, with the whole box passed along as context.
-- Every sentence and chunk taught is passed back to Claude on the next line, so it says "you already know ni" instead of re-explaining it.
+- Every sentence and chunk taught goes into memory and comes back to Claude on the next line, this session or a later one, so it says "you already know ni" instead of re-explaining it.
 - Lines the OCR flags as still being typed out are skipped until they settle.
 - Screen capture keeps running while a lesson is being spoken. If you race ahead, the oldest queued frames are dropped rather than played back late.
 - Menus, HUD numbers, and button prompts are OCR'd but not taught. Only `dialogue`, `narration`, and `choice` lines get a lesson.
@@ -109,6 +132,8 @@ All settings are environment variables (see `.env.example`); the common ones als
 | `JPTUTOR_REGION`           | whole screen         | `x,y,width,height` of the dialogue box               |
 | `JPTUTOR_POLL_INTERVAL`    | `0.5`                | Seconds between screen grabs                         |
 | `JPTUTOR_CHANGE_THRESHOLD` | `0.02`               | Fraction of the region that must change to trigger   |
+| `JPTUTOR_MEMORY`           | `~/.jptutor/memory.sqlite` | Memory file, or `0` to disable                 |
+| `JPTUTOR_REPEAT`           | `quick`              | Line from an earlier session: `quick`, `skip`, `full`|
 | `JPTUTOR_OVERLAY`          | `1`                  | `0` to disable the highlight window                  |
 | `JPTUTOR_OVERLAY_GEOMETRY` | bottom centre        | `x,y,width,height` of the overlay                    |
 | `JPTUTOR_OVERLAY_FONT_SIZE`| `34`                 | Japanese font size in the overlay                    |
@@ -154,6 +179,7 @@ jptutor/
   prompts.py        system prompts
   script.py         Lesson -> ordered Utterances (the Paul Noble pacing) with highlight spans
   display.py        Display interface, console highlighter, speaker wrapper that syncs them
+  memory.py         long-term memory (SQLite): sentences, pieces, patterns, tiered summary, Anki export
   overlay.py        the on-screen highlight window (tkinter)
   tts.py            edge-tts synthesis, disk cache, playback; ConsoleSpeaker for dry runs
   pipeline.py       OCR -> filter -> dedupe -> lesson -> speak; background FrameWorker
@@ -172,7 +198,6 @@ Each new line costs one small vision call plus one lesson call. On the subscript
 - Global hotkey (`pip install "jptutor[hotkey]"`) so Enter is not needed in manual mode.
 - Pre-synthesise the next clip while the current one plays.
 - A local OCR backend (manga-ocr) to skip the vision call entirely.
-- Export a session's chunks to an Anki deck.
 
 ## Development
 

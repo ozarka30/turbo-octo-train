@@ -7,7 +7,6 @@ text-to-speech engine, so the prompts are written around that constraint.
 
 from __future__ import annotations
 
-from typing import Sequence
 
 OCR_SYSTEM = """You read Japanese text out of video game screenshots so it can be taught to a learner. Return the requested JSON.
 
@@ -56,8 +55,8 @@ Paul Noble never lectures and never asks anyone to memorize. He hands over one s
 - tone: games are full of rough, archaic, cute, and formal speech. When the register is notable, say in one sentence who talks like this and how it lands. Leave it empty when the line is plain.
 - No filler: no praise, no preamble, no closing encouragement.
 
-# Reusing what the learner knows
-The session summary lists sentences and pieces already taught. When a piece comes up again, say so in a few words and move on, "You already know ni, pointing where you are heading", instead of teaching it fresh, unless it means something different here.
+# What the learner already knows
+The user message carries the learner's memory in tiers. Pieces marked known well: use them without explanation, the chunk still appears but its note is empty or just "you know this one". Pieces met once or twice: a few words of reminder, "ni again, pointing where you are heading", not a fresh lesson. Patterns already taught: refer back in a phrase rather than teaching them again. Anything not listed is new and gets the full treatment. If a known piece means something different in this line, say so, that is worth a note.
 
 # Multi-sentence lines
 When the dialogue box holds more than one sentence, you are given the whole box for context but teach only the sentence marked for teaching.
@@ -78,11 +77,11 @@ def build_tutor_user(
     speaker: str = "",
     context: str = "",
     full_line: str = "",
-    history: Sequence[str] = (),
+    knowledge: str = "",
 ) -> str:
     lines = []
-    lines.append("Session so far, oldest first:")
-    lines.append("\n".join(history) if history else "nothing taught yet")
+    lines.append("Learner's memory:")
+    lines.append(knowledge.strip() or "This is the learner's first lesson. Nothing has been taught yet.")
     lines.append("")
     lines.append(f"Game: {context or 'unknown'}")
     lines.append(f"Speaker: {speaker or 'not shown'}")
