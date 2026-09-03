@@ -19,14 +19,57 @@ It is three parts glued together:
 | Memory | Remembers what you have been taught, across sessions        | SQLite in `~/.jptutor/`, summarised into every lesson prompt |
 | Practice | Listens to you say the line and scores it               | local faster-whisper + pykakasi, no network              |
 
-## Setup
+## Quick start on your machine
+
+You need Python 3.10 or newer, Git, and Claude Code logged in with your subscription (`claude` once, then log in) or an `ANTHROPIC_API_KEY`.
+
+**Windows (PowerShell)**
+
+```powershell
+git clone https://github.com/ozarka30/turbo-octo-train.git
+cd turbo-octo-train
+py -3 -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -e ".[all,dev]"
+jptutor doctor
+```
+
+Python from python.org includes tkinter (the overlay). If `doctor` says the microphone is missing, the Python audio wheels normally bundle PortAudio, so a reboot after installing is usually enough.
+
+**macOS**
 
 ```bash
-git clone <this repo> && cd turbo-octo-train
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -e ".[dev]"
-jptutor doctor          # tells you what is missing
+brew install python-tk portaudio          # overlay + microphone support
+git clone https://github.com/ozarka30/turbo-octo-train.git && cd turbo-octo-train
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[all,dev]"
+jptutor doctor
 ```
+
+Grant the terminal Screen Recording (for capture), Accessibility (for hotkeys), and Microphone permissions in System Settings > Privacy & Security the first time each is used. For the offline voice, add the Kyoko or Otoya voice under Accessibility > Spoken Content.
+
+**Linux (Debian/Ubuntu)**
+
+```bash
+sudo apt install python3-tk libportaudio2 espeak-ng
+git clone https://github.com/ozarka30/turbo-octo-train.git && cd turbo-octo-train
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[all,dev]"
+jptutor doctor
+```
+
+**Then, on any OS**
+
+```bash
+jptutor teach --offline --dry-run "学校に行きます。"   # the flow, no Claude, no audio
+jptutor say "こんにちは" --slow                        # speakers work?
+jptutor teach "この街には近づくな。"                    # first real lesson, spoken
+jptutor watch --manual --context "your game"          # F8 or Enter to read the screen
+```
+
+`jptutor doctor` tells you which Claude backend it picked, whether audio, the microphone, and screen capture work, and what to install if not.
+
+## Setup details
 
 Audio playback uses pygame, which is installed with the package. Put `ANTHROPIC_API_KEY` or any `JPTUTOR_*` setting in a `.env` file in the folder you run from and it is loaded automatically.
 
