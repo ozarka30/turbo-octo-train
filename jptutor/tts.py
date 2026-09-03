@@ -19,7 +19,13 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Iterable, List, Optional, Protocol
+from typing import Callable, Iterable, List, Optional, Protocol
+
+Abort = Callable[[], bool]
+
+
+def _never() -> bool:
+    return False
 
 from .config import Settings
 from .errors import FatalError
@@ -88,8 +94,7 @@ class Player:
     def describe(self) -> str:
         return "pygame" if self._pygame else self._cmd[0]
 
-    def play(self, path: Path, stop: Optional[threading.Event] = None) -> None:
-        stop = stop or threading.Event()
+    def play(self, path: Path, abort: Abort = _never) -> None:
         if self._pygame:
             pg = self._pygame
             if not pg.mixer.get_init():
@@ -97,19 +102,24 @@ class Player:
             pg.mixer.music.load(str(path))
             pg.mixer.music.play()
             while pg.mixer.music.get_busy():
-                if stop.is_set():
+                if abort():
                     pg.mixer.music.stop()
                     break
                 time.sleep(0.03)
             pg.mixer.music.unload()
             return
-        self._proc = subprocess.Popen(self._cmd + [str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        while self._proc.poll() is None:
-            if stop.is_set():
-                self._proc.terminate()
-                break
-            time.sleep(0.03)
-        self._proc = None
+        run_interruptible(self._cmd + [str(path)], abort)
+
+
+def run_interruptible(cmd: List[str], abort: Abort = _never, **popen_kw) -> int:
+    """Run a command, killing it early if `abort()` turns true."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **popen_kw)
+    while proc.poll() is None:
+        if abort():
+            proc.terminate()
+            break
+        time.sleep(0.03)
+    return proc.returncode if proc.returncode is not None else -1
 
 
 # ----------------------------------------------------------------------------- edge-tts
@@ -120,7 +130,7 @@ class EdgeSpeaker:
         self.cache.mkdir(parents=True, exist_ok=True)
         self.player = player or Player()
         self.concurrency = concurrency
-        self.stop = threading.Event()  # set to cut the current clip short
+        self.should_abort: Abort = _never  # cut the current clip short when this turns true
 
     def _voice_and_rate(self, u: Utterance):
         s = self.settings
@@ -167,15 +177,139 @@ class EdgeSpeaker:
 
     def speak(self, u: Utterance) -> None:
         path = self.synth(u)
-        self.player.play(path, self.stop)
-        if u.pause_after > 0 and not self.stop.is_set():
-            self.stop.wait(u.pause_after)
+        self.player.play(path, self.should_abort)
+        _pause(u.pause_after, self.should_abort)
 
     def speak_all(self, script: Iterable[Utterance]) -> None:
         script = list(script)
         self.prepare(script)
         for u in script:
-            if self.stop.is_set():
+            if self.should_abort():
+                break
+            self.speak(u)
+
+
+def _pause(seconds: float, abort: Abort) -> None:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end and not abort():
+        time.sleep(0.05)
+
+
+# ----------------------------------------------------------------------------- system voices
+class SystemSpeaker:
+    """The operating system's own voices: `say` on macOS, SAPI on Windows, espeak-ng on Linux.
+
+    Lower quality than edge-tts but works offline. Japanese needs a Japanese voice
+    installed (macOS: Kyoko or Otoya; Windows: Haruka / Ayumi / Ichiro from Settings >
+    Language > Japanese; Linux: espeak-ng ships one).
+    """
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.should_abort: Abort = _never
+        self.system = platform.system()
+        if self.system == "Darwin":
+            if not shutil.which("say"):
+                raise FatalError("macOS `say` not found")
+        elif self.system == "Windows":
+            if not shutil.which("powershell"):
+                raise FatalError("PowerShell not found for the Windows voice")
+        else:
+            if not shutil.which("espeak-ng") and not shutil.which("espeak"):
+                raise FatalError("Install espeak-ng for the offline voice (apt install espeak-ng)")
+        self.ja_voice = getattr(settings, "system_ja_voice", "") or ("Kyoko" if self.system == "Darwin" else "")
+        self.en_voice = getattr(settings, "system_en_voice", "") or ("Samantha" if self.system == "Darwin" else "")
+
+    def describe(self) -> str:
+        return {"Darwin": "macOS say", "Windows": "Windows SAPI"}.get(self.system, "espeak-ng")
+
+    def speak(self, u: Utterance) -> None:
+        rate_mult = 0.8 if (u.lang == "ja" and u.slow) else 1.0
+        if self.system == "Darwin":
+            voice = self.ja_voice if u.lang == "ja" else self.en_voice
+            cmd = ["say", "-r", str(int(180 * rate_mult))]
+            if voice:
+                cmd += ["-v", voice]
+            run_interruptible(cmd + [u.text], self.should_abort)
+        elif self.system == "Windows":
+            culture = "ja-JP" if u.lang == "ja" else "en-US"
+            rate = -2 if rate_mult < 1 else 0
+            text = u.text.replace("'", "''")
+            script = (
+                "Add-Type -AssemblyName System.Speech; "
+                "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                f"$v = $s.GetInstalledVoices() | Where-Object {{ $_.VoiceInfo.Culture.Name -eq '{culture}' }} | Select-Object -First 1; "
+                "if ($v) { $s.SelectVoice($v.VoiceInfo.Name) }; "
+                f"$s.Rate = {rate}; $s.Speak('{text}')"
+            )
+            run_interruptible(["powershell", "-NoProfile", "-Command", script], self.should_abort)
+        else:
+            exe = shutil.which("espeak-ng") or "espeak"
+            voice = "ja" if u.lang == "ja" else "en-us"
+            run_interruptible([exe, "-v", voice, "-s", str(int(150 * rate_mult)), u.text], self.should_abort)
+        _pause(u.pause_after, self.should_abort)
+
+    def prepare(self, script: Iterable[Utterance]) -> None:
+        return None
+
+    def speak_all(self, script: Iterable[Utterance]) -> None:
+        for u in script:
+            if self.should_abort():
+                break
+            self.speak(u)
+
+
+class FallbackSpeaker:
+    """Use the primary speaker; if synthesis fails, switch to the fallback for the session."""
+
+    def __init__(self, primary, fallback, on_switch: Optional[Callable[[str], None]] = None):
+        self.primary, self.fallback = primary, fallback
+        self.active = primary
+        self.on_switch = on_switch or (lambda msg: log.warning(msg))
+        self._abort: Abort = _never
+
+    @property
+    def should_abort(self) -> Abort:
+        return self._abort
+
+    @should_abort.setter
+    def should_abort(self, fn: Abort) -> None:
+        self._abort = fn
+        for spk in (self.primary, self.fallback):
+            if hasattr(spk, "should_abort"):
+                spk.should_abort = fn
+
+    def _switch(self, err: Exception) -> None:
+        if self.active is self.primary:
+            self.active = self.fallback
+            self.on_switch(f"{type(self.primary).__name__} failed ({err}); using {self.fallback.describe()} for the rest of the session")
+
+    def prepare(self, script: Iterable[Utterance]) -> None:
+        script = list(script)
+        prep = getattr(self.active, "prepare", None)
+        if prep is None:
+            return
+        try:
+            prep(script)
+        except FatalError:
+            raise
+        except Exception as e:
+            self._switch(e)
+
+    def speak(self, u: Utterance) -> None:
+        try:
+            self.active.speak(u)
+        except FatalError:
+            raise
+        except Exception as e:
+            self._switch(e)
+            self.active.speak(u)
+
+    def speak_all(self, script: Iterable[Utterance]) -> None:
+        script = list(script)
+        self.prepare(script)
+        for u in script:
+            if self._abort():
                 break
             self.speak(u)
 
@@ -185,4 +319,14 @@ def make_speaker(settings: Settings, backend: str = "edge") -> Speaker:
         return ConsoleSpeaker()
     if backend == "edge":
         return EdgeSpeaker(settings)
+    if backend == "system":
+        return SystemSpeaker(settings)
+    if backend == "auto":
+        edge = EdgeSpeaker(settings)
+        try:
+            system = SystemSpeaker(settings)
+        except FatalError as e:
+            log.info("no system voice for fallback: %s", e)
+            return edge
+        return FallbackSpeaker(edge, system)
     raise ValueError(f"unknown tts backend: {backend}")

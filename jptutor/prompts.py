@@ -18,6 +18,7 @@ Return every distinct piece of Japanese text that is visible, in the order a pla
 - complete: false only when the line is visibly still being typed out or is cut off at the box edge, so it ends mid-word or mid-phrase. Otherwise true.
 - Look-alikes to check: ツ and シ, ソ and ン, the long-vowel mark ー and the kanji 一, small っ ゃ ゅ ょ against full size.
 - Skip English, romaji, and bare numbers. If there is no Japanese text, return an empty list.
+- dialogue_box: the rectangle that holds the dialogue or narration text, as fractions of the whole image [left, top, right, bottom], with a little margin around the text. Empty when no such box is on screen.
 """
 
 OCR_USER = "List the Japanese text in this screenshot."

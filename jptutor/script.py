@@ -56,13 +56,20 @@ def chunk_spans(lesson: Lesson) -> List[Optional[Span]]:
     return spans
 
 
-def build_script(lesson: Lesson, *, quiz_pause: float = 2.0, full_breakdown: bool = True) -> List[Utterance]:
-    """Return the spoken sequence for one in-game line."""
+def intro_utterance(japanese: str) -> Utterance:
+    """The first thing the learner hears: the line itself, slowly. Available before the lesson is."""
+    return Utterance("ja", japanese, slow=True, pause_after=0.6, span=(0, len(japanese)))
+
+
+def build_script(lesson: Lesson, *, quiz_pause: float = 2.0, full_breakdown: bool = True, skip_intro: bool = False) -> List[Utterance]:
+    """Return the spoken sequence for one in-game line. `skip_intro` when the
+    Japanese line was already played while the lesson was being generated."""
     s: List[Utterance] = []
     whole: Span = (0, len(lesson.japanese))
 
     # 1. Hear it: the line in Japanese, slowly.
-    s.append(Utterance("ja", lesson.japanese, slow=True, pause_after=0.6, span=whole))
+    if not skip_intro:
+        s.append(intro_utterance(lesson.japanese))
     # 2. Understand it: English translation, plus the register when it matters.
     s.append(Utterance("en", lesson.english, pause_after=0.6, span=whole))
     if full_breakdown and lesson.tone.strip():

@@ -38,7 +38,7 @@ class FakeTutor:
 
     def ocr(self, image: Image.Image) -> OcrResult:
         self.ocr_calls += 1
-        return OcrResult(lines=self.ocr_lines)
+        return OcrResult(lines=self.ocr_lines, dialogue_box=[0.05, 0.7, 0.95, 0.95])
 
     def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", knowledge: str = "", recent: str = "") -> Lesson:
         self.teach_calls.append(japanese)

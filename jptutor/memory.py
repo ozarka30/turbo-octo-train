@@ -147,10 +147,19 @@ class Memory:
                 )
 
     def touch_sentence(self, japanese: str, now: Optional[float] = None) -> None:
-        """Count another sighting of a line that was replayed from memory."""
+        """Count another sighting of a line that was replayed from memory, and of its pieces."""
         now = time.time() if now is None else now
+        key = sentence_key(japanese)
         with self._lock, self._db:
-            self._db.execute("UPDATE sentences SET times_seen = times_seen + 1, last_seen = ? WHERE key = ?", (now, sentence_key(japanese)))
+            row = self._db.execute("SELECT lesson_json FROM sentences WHERE key = ?", (key,)).fetchone()
+            self._db.execute("UPDATE sentences SET times_seen = times_seen + 1, last_seen = ? WHERE key = ?", (now, key))
+            if row is not None:
+                lesson = Lesson.model_validate_json(row["lesson_json"])
+                for c in lesson.chunks:
+                    self._db.execute(
+                        "UPDATE pieces SET times_seen = times_seen + 1, last_seen = ? WHERE japanese = ? AND reading = ?",
+                        (now, c.japanese, c.reading),
+                    )
 
     def forget(self) -> None:
         with self._lock, self._db:

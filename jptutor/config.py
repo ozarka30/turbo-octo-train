@@ -35,6 +35,13 @@ class Settings:
     ja_rate_normal: str = "+0%"
     en_rate: str = "+0%"
 
+    tts: str = "auto"  # edge | system | auto (edge, falling back to the system voice if it fails)
+    prespeak: bool = True  # play the Japanese line as soon as OCR has it, while the lesson generates
+    hotkeys: bool = True
+    hotkey_spec: str = ""  # e.g. "skip=<f9>,pause=<f10>"
+    auto_region: bool = False  # let the first OCR result pick the dialogue box
+    repeat_skip_after: int = 3  # a known line is replayed until seen this many times, then skipped
+
     region: Optional[Region] = None
     poll_interval: float = 0.5
     stability_frames: int = 2
@@ -67,6 +74,12 @@ class Settings:
         s.level = e.get("JPTUTOR_LEVEL", s.level)
         s.ja_voice = e.get("JPTUTOR_JA_VOICE", s.ja_voice)
         s.en_voice = e.get("JPTUTOR_EN_VOICE", s.en_voice)
+        s.tts = e.get("JPTUTOR_TTS", s.tts)
+        s.prespeak = e.get("JPTUTOR_PRESPEAK", "1") not in ("0", "false", "no", "off")
+        s.hotkeys = e.get("JPTUTOR_HOTKEYS", "1") not in ("0", "false", "no", "off")
+        s.hotkey_spec = e.get("JPTUTOR_HOTKEY_MAP", s.hotkey_spec)
+        s.auto_region = e.get("JPTUTOR_AUTO_REGION", "0") in ("1", "true", "yes", "on")
+        s.repeat_skip_after = int(e.get("JPTUTOR_REPEAT_SKIP_AFTER", s.repeat_skip_after))
         if e.get("JPTUTOR_REGION"):
             s.region = parse_region(e["JPTUTOR_REGION"])
         s.poll_interval = float(e.get("JPTUTOR_POLL_INTERVAL", s.poll_interval))

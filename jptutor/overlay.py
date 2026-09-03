@@ -104,6 +104,9 @@ class Overlay:
         self._set_sentence("jptutor is listening…", dim=True)
 
     # ------------------------------------------------------------- thread-safe API
+    def show_sentence(self, japanese: str) -> None:
+        self._q.put(("sentence", japanese))
+
     def show_lesson(self, lesson: Lesson) -> None:
         self._q.put(("lesson", lesson))
 
@@ -166,12 +169,13 @@ class Overlay:
 
     def _apply(self, event: tuple) -> None:
         kind = event[0]
-        if kind == "lesson":
-            lesson: Lesson = event[1]
-            self._sentence = lesson.japanese
-            self._set_sentence(lesson.japanese)
-            self.reading.configure(text="")
-            self.caption.configure(text="")
+        if kind in ("lesson", "sentence"):
+            sentence = event[1].japanese if kind == "lesson" else event[1]
+            if getattr(self, "_sentence", None) != sentence:
+                self._sentence = sentence
+                self._set_sentence(sentence)
+                self.reading.configure(text="")
+                self.caption.configure(text="")
         elif kind == "utt":
             u: Utterance = event[1]
             self._highlight(u.span)

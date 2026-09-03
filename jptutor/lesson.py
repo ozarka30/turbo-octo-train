@@ -32,6 +32,10 @@ class OcrLine(BaseModel):
 
 class OcrResult(BaseModel):
     lines: List[OcrLine] = Field(description="Every distinct piece of Japanese text visible, in reading order.")
+    dialogue_box: List[float] = Field(
+        default_factory=list,
+        description="Where the dialogue or narration box sits, as [left, top, right, bottom] fractions of the image from 0 to 1. Empty when there is no such box.",
+    )
 
 
 class Chunk(BaseModel):

@@ -49,7 +49,32 @@ def _settings(args) -> Settings:
         s.memory_path = None
     if getattr(args, "repeat", None):
         s.repeat = args.repeat
+    if getattr(args, "tts", None):
+        s.tts = args.tts
+    if getattr(args, "no_hotkeys", False):
+        s.hotkeys = False
+    if getattr(args, "auto_region", False):
+        s.auto_region = True
     return s
+
+
+def _speaker(settings: Settings, args):
+    from .tts import make_speaker
+
+    if args.dry_run:
+        return make_speaker(settings, "console")
+    return make_speaker(settings, settings.tts)
+
+
+def _controls(settings: Settings):
+    from .controls import Controls, parse_hotkeys, start_hotkeys
+
+    controls = Controls()
+    if settings.hotkeys:
+        listener = start_hotkeys(controls, parse_hotkeys(settings.hotkey_spec))
+        if listener is None:
+            print("hotkeys unavailable (pip install pynput); use --manual / Enter instead.", file=sys.stderr)
+    return controls
 
 
 def _memory(settings: Settings):
@@ -111,7 +136,7 @@ def cmd_teach(args) -> int:
     settings = _settings(args)
 
     def body(display, stop):
-        speaker = make_speaker(settings, "console" if args.dry_run else "edge")
+        speaker = _speaker(settings, args)
         pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings), stop=stop)
         for sentence in args.sentence:
             if stop.is_set():
@@ -136,7 +161,7 @@ def cmd_image(args) -> int:
     settings = _settings(args)
 
     def body(display, stop):
-        speaker = make_speaker(settings, "console" if args.dry_run else "edge")
+        speaker = _speaker(settings, args)
         pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings), stop=stop)
         for path in args.image:
             if stop.is_set():
@@ -165,11 +190,38 @@ def cmd_watch(args) -> int:
     if settings.region is None:
         print("warning: no --region given, capturing the whole primary monitor. Set JPTUTOR_REGION or --region x,y,w,h to the dialogue box for better results.", file=sys.stderr)
     def body(display, stop):
-        speaker = make_speaker(settings, "console" if args.dry_run else "edge")
-        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings), stop=stop)
+        from .pipeline import box_to_region
+
+        speaker = _speaker(settings, args)
+        controls = _controls(settings)
+        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings), stop=stop, controls=controls)
         worker = FrameWorker(pipe, settings.max_queue).start()
         grabber = ScreenGrabber(settings.region)
+        controls.actions["capture"] = lambda: worker.submit(grabber.grab())
+        controls.actions["repeat"] = lambda: worker.submit_task(pipe.repeat_last)
+        practice = getattr(pipe, "practice_last", None)
+        if practice:
+            controls.actions["practice"] = lambda: worker.submit_task(practice)
+        applied_box = {"done": False}
 
+        def maybe_auto_region():
+            if not settings.auto_region or applied_box["done"] or pipe.last_box is None:
+                return
+            box, size = pipe.last_box
+            try:
+                region = box_to_region(box, size, grabber.region)
+                grabber.set_region(region)
+                applied_box["done"] = True
+                print(f"dialogue box found, now watching JPTUTOR_REGION={','.join(map(str, region))}")
+            except ValueError as e:
+                print(f"could not apply detected dialogue box: {e}", file=sys.stderr)
+                applied_box["done"] = True
+
+        if controls.hotkey_listener:
+            from .controls import parse_hotkeys
+
+            keys = parse_hotkeys(settings.hotkey_spec)
+            print("hotkeys: " + ", ".join(f"{keys[a]} {a}" for a in ("capture", "skip", "pause", "repeat", "practice")))
         try:
             if args.manual:
                 print("Manual mode: press Enter to read the screen, Ctrl-C to quit.")
@@ -178,11 +230,13 @@ def cmd_watch(args) -> int:
                     if stop.is_set():
                         break
                     worker.submit(grabber.grab())
+                    maybe_auto_region()
             else:
                 detector = ChangeDetector(settings.change_threshold, settings.stability_frames)
                 print(f"Watching region {grabber.region} every {settings.poll_interval}s. Ctrl-C to quit (or close the overlay).")
                 for frame in grabber.watch(detector, settings.poll_interval, stop):
                     worker.submit(frame)
+                    maybe_auto_region()
         except (KeyboardInterrupt, EOFError):
             pass
         code = 0
@@ -365,10 +419,13 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--dry-run", action="store_true", help="print the lesson (with text highlighting) instead of speaking it")
         sp.add_argument("--no-overlay", action="store_true", help="do not show the on-screen highlight window")
         sp.add_argument("--no-memory", action="store_true", help="do not read or write long-term memory")
+        sp.add_argument("--tts", choices=["auto", "edge", "system"], help="voice backend: edge-tts, the OS voice, or auto (edge with system fallback)")
+        sp.add_argument("--no-hotkeys", action="store_true", help="do not register global hotkeys")
         sp.add_argument("--repeat", choices=["quick", "skip", "full"], help="line taught in an earlier session: quick replay (default), skip, or teach again")
         sp.add_argument("--offline", action="store_true", help="use a canned sample lesson instead of calling Claude (demo)")
         if capture:
             sp.add_argument("--region", help="x,y,width,height of the dialogue box")
+            sp.add_argument("--auto-region", action="store_true", help="let the first OCR result locate the dialogue box and watch just that")
 
     sp = sub.add_parser("teach", help="teach one or more sentences given as text")
     common(sp)

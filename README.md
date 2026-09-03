@@ -27,7 +27,7 @@ pip install -e ".[dev]"
 jptutor doctor          # tells you what is missing
 ```
 
-Audio playback needs one of: `pip install pygame`, or `ffmpeg` (`ffplay`), `mpg123`, or `mpv` on your PATH. macOS has `afplay` built in.
+Audio playback uses pygame, which is installed with the package. Put `ANTHROPIC_API_KEY` or any `JPTUTOR_*` setting in a `.env` file in the folder you run from and it is loaded automatically.
 
 ### Connecting to Claude
 
@@ -60,7 +60,7 @@ jptutor voices --locale ja
 ## Play a game
 
 1. Start the game in windowed or borderless mode.
-2. Find the dialogue box: `jptutor select-region` (drag a box, it prints `JPTUTOR_REGION=x,y,w,h`), or `jptutor snapshot` and read the pixels off the saved image.
+2. Find the dialogue box: `jptutor select-region` (drag a box, it prints `JPTUTOR_REGION=x,y,w,h`), `jptutor snapshot` and read the pixels off the saved image, or pass `--auto-region` and let the first OCR result locate the box for you (it prints the region it settled on so you can save it).
 3. Watch:
 
 ```bash
@@ -72,6 +72,24 @@ jptutor watch --level intermediate                  # beginner | intermediate | 
 ```
 
 You can also run the pipeline on saved screenshots: `jptutor image shot1.png shot2.png`.
+
+### Controls while you play
+
+| Key | Action |
+| --- | --- |
+| F8  | Capture the screen now (no need for auto mode or Enter) |
+| F9  | Skip the rest of this lesson |
+| F10 | Pause / resume |
+| F11 | Repeat the last lesson |
+| F7  | Practice: say the last sentence and get checked (see below) |
+
+Hotkeys are global, so they work while the game has focus. They need `pip install "jptutor[hotkey]"` (pynput); change them with `JPTUTOR_HOTKEY_MAP="skip=<ctrl>+s,pause=<f6>"` or turn them off with `--no-hotkeys`. Without pynput, `--manual` mode with Enter still works.
+
+The Japanese line is read aloud as soon as OCR has it, while Claude is still writing the lesson, so the wait is filled with the thing you most want to hear. `JPTUTOR_PRESPEAK=0` turns that off.
+
+### Voices
+
+`edge-tts` gives the best voices but needs the network. `--tts auto` (the default) falls back to your operating system's voice for the rest of the session if edge-tts fails: `say` on macOS (install the Kyoko or Otoya voice), SAPI on Windows (add a Japanese voice under Settings > Language), `espeak-ng` on Linux. `--tts system` uses the OS voice from the start.
 
 ### The overlay
 
@@ -92,7 +110,7 @@ The tutor keeps a long-term memory in `~/.jptutor/memory.sqlite`: every sentence
 - **Patterns already taught**: referred back to, not re-taught.
 - Anything else is new and gets the full treatment.
 
-Lines you met in an earlier session are handled by `--repeat` / `JPTUTOR_REPEAT`: `quick` (default) replays Japanese and English from memory with no Claude call, `skip` says nothing, `full` teaches it again.
+Lines you met in an earlier session are handled by `--repeat` / `JPTUTOR_REPEAT`: `quick` (default) replays Japanese and English from memory with no Claude call until the line has been seen `JPTUTOR_REPEAT_SKIP_AFTER` times (3), then stays quiet; `skip` says nothing; `full` teaches it again. Replays count toward the pieces' sighting counts.
 
 ```bash
 jptutor memory              # stats
@@ -136,6 +154,12 @@ All settings are environment variables (see `.env.example`); the common ones als
 | `JPTUTOR_KNOWLEDGE_REFRESH`| `6`                  | Lessons between memory-summary snapshots (cached)    |
 | `JPTUTOR_MEMORY`           | `~/.jptutor/memory.sqlite` | Memory file, or `0` to disable                 |
 | `JPTUTOR_REPEAT`           | `quick`              | Line from an earlier session: `quick`, `skip`, `full`|
+| `JPTUTOR_TTS`              | `auto`               | `edge`, `system`, or `auto` (edge with OS fallback)  |
+| `JPTUTOR_PRESPEAK`         | `1`                  | Read the line aloud while the lesson is generated     |
+| `JPTUTOR_HOTKEYS`          | `1`                  | `0` to skip registering global hotkeys               |
+| `JPTUTOR_HOTKEY_MAP`       |                      | e.g. `skip=<f9>,pause=<f10>,repeat=<f11>,capture=<f8>,practice=<f7>` |
+| `JPTUTOR_AUTO_REGION`      | `0`                  | Let the first OCR result pick the dialogue box       |
+| `JPTUTOR_REPEAT_SKIP_AFTER`| `3`                  | Replay a known line until seen this many times       |
 | `JPTUTOR_OVERLAY`          | `1`                  | `0` to disable the highlight window                  |
 | `JPTUTOR_OVERLAY_GEOMETRY` | bottom centre        | `x,y,width,height` of the overlay                    |
 | `JPTUTOR_OVERLAY_FONT_SIZE`| `34`                 | Japanese font size in the overlay                    |
@@ -181,6 +205,7 @@ jptutor/
   prompts.py        system prompts
   script.py         Lesson -> ordered Utterances (the Paul Noble pacing) with highlight spans
   display.py        Display interface, console highlighter, speaker wrapper that syncs them
+  controls.py       skip / pause / repeat / capture / practice flags and global hotkeys
   memory.py         long-term memory (SQLite): sentences, pieces, patterns, tiered summary, usage log, Anki export
   cache.py          OCR results cached on disk by screenshot hash
   usage.py          token and cost accounting; the summary printed at exit
@@ -207,9 +232,8 @@ The two levers that trade quality for cost are `JPTUTOR_TUTOR_EFFORT=medium` (le
 
 ## Roadmap ideas
 
-- Global hotkey (`pip install "jptutor[hotkey]"`) so Enter is not needed in manual mode.
-- Pre-synthesise the next clip while the current one plays.
 - A local OCR backend (manga-ocr) to skip the vision call entirely.
+- Real spaced repetition and a `jptutor review` mode that quizzes from memory without a game.
 
 ## Development
 

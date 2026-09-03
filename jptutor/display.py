@@ -16,6 +16,8 @@ from .script import Utterance, mark_span
 
 
 class Display(Protocol):
+    def show_sentence(self, japanese: str) -> None: ...
+
     def show_lesson(self, lesson: Lesson) -> None: ...
 
     def on_utterance(self, utterance: Utterance) -> None: ...
@@ -34,9 +36,13 @@ class ConsoleDisplay:
         self.frames = []  # (marked sentence, reading, caption) per utterance
         self.errors = []
 
+    def show_sentence(self, japanese: str) -> None:
+        self.sentence = japanese
+        print(f"  ┌ {japanese}", file=self.out)
+
     def show_lesson(self, lesson: Lesson) -> None:
-        self.sentence = lesson.japanese
-        print(f"  ┌ {lesson.japanese}", file=self.out)
+        if self.sentence != lesson.japanese:
+            self.show_sentence(lesson.japanese)
 
     def on_utterance(self, u: Utterance) -> None:
         marked = mark_span(self.sentence, u.span)
@@ -46,6 +52,7 @@ class ConsoleDisplay:
         print(f"  │ {marked}{piece}", file=self.out)
 
     def finish(self) -> None:
+        self.sentence = ""
         print("  └", file=self.out)
 
     def show_error(self, message: str) -> None:
@@ -54,6 +61,8 @@ class ConsoleDisplay:
 
 
 class NullDisplay:
+    def show_sentence(self, japanese: str) -> None: ...
+
     def show_lesson(self, lesson: Lesson) -> None: ...
 
     def on_utterance(self, utterance: Utterance) -> None: ...
@@ -65,18 +74,24 @@ class NullDisplay:
 
 class DisplaySpeaker:
     """Wraps a Speaker so the display is updated right before each utterance is played,
-    and playback stops promptly when `stop` is set."""
+    playback stops promptly when `stop` is set, and the controls' skip/pause are honoured."""
 
-    def __init__(self, speaker, display: Optional[Display], stop: Optional[threading.Event] = None):
+    def __init__(self, speaker, display: Optional[Display], stop: Optional[threading.Event] = None, controls=None):
+        from .controls import Controls
+
         self.speaker = speaker
         self.display = display or NullDisplay()
         self.stop = stop or threading.Event()
-        inner_stop = getattr(speaker, "stop", None)
-        if isinstance(inner_stop, threading.Event) and inner_stop is not self.stop:
-            speaker.stop = self.stop  # the audio player watches the same flag
+        self.controls = controls or Controls()
+        if hasattr(speaker, "should_abort"):
+            speaker.should_abort = self.aborted  # the audio player polls this mid-clip
+
+    def aborted(self) -> bool:
+        return self.stop.is_set() or self.controls.skip.is_set()
 
     def speak(self, u: Utterance) -> None:
-        if self.stop.is_set():
+        self.controls.wait_if_paused(self.stop)
+        if self.aborted():
             return
         self.display.on_utterance(u)
         self.speaker.speak(u)
@@ -87,7 +102,7 @@ class DisplaySpeaker:
         if prepare:
             prepare(script)  # synthesise everything first so highlights and audio stay in step
         for u in script:
-            if self.stop.is_set():
+            if self.aborted():
                 break
             self.speak(u)
 
