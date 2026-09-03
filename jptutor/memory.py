@@ -118,9 +118,11 @@ class Memory:
         self._db.close()
 
     # ------------------------------------------------------------------ write
-    def record_lesson(self, lesson: Lesson, *, game: str = "", speaker: str = "", now: Optional[float] = None) -> None:
+    def record_lesson(self, lesson: Lesson, *, game: str = "", speaker: str = "", now: Optional[float] = None, key_text: str = "") -> None:
+        """Store a lesson. `key_text` is the sentence as OCR produced it, so later lookups
+        (which also use OCR text) hit even if Claude normalised punctuation."""
         now = time.time() if now is None else now
-        key = sentence_key(lesson.japanese)
+        key = sentence_key(key_text or lesson.japanese)
         with self._lock, self._db:
             self._db.execute(
                 """INSERT INTO sentences (key, japanese, english, game, speaker, lesson_json, times_seen, first_seen, last_seen)

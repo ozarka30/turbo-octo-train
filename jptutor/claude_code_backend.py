@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -26,6 +27,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from .config import Settings
+from .errors import FatalError
 from .lesson import Lesson, OcrResult
 from .cache import OcrCache, png_bytes
 from .prompts import OCR_SYSTEM, build_knowledge_block, build_tutor_system, build_tutor_user
@@ -51,7 +53,7 @@ class ClaudeCodeError(RuntimeError):
 class ClaudeCodeTutor:
     def __init__(self, settings: Settings, *, binary: str = "claude", timeout: float = 300.0, runner=None):
         self.settings = settings
-        self.binary = binary
+        self.binary = shutil.which(binary) or binary  # full path: on Windows the npm shim is claude.cmd
         self.timeout = timeout
         self._run = runner or subprocess.run
         # An empty working directory: no project CLAUDE.md / .mcp.json gets loaded,
@@ -77,7 +79,7 @@ class ClaudeCodeTutor:
 
     def _invoke(self, args: List[str], prompt: str, model_cls: Type[T], *, model: str = "", kind: str = "") -> T:
         if shutil.which(self.binary) is None and not Path(self.binary).exists():
-            raise ClaudeCodeError(INSTALL_HINT)
+            raise FatalError(INSTALL_HINT)
         started = time.monotonic()
         try:
             # The prompt goes in on stdin: --allowedTools / --disallowedTools take
@@ -88,8 +90,12 @@ class ClaudeCodeTutor:
                 cwd=str(self.workdir),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",  # Japanese on stdin/stdout regardless of the console code page
+                errors="replace",
                 timeout=self.timeout,
             )
+        except FileNotFoundError as e:
+            raise FatalError(INSTALL_HINT) from e
         except subprocess.TimeoutExpired as e:
             raise ClaudeCodeError(f"claude -p timed out after {self.timeout:.0f}s") from e
         log.debug("claude -p finished in %.1fs (exit %s)", time.monotonic() - started, proc.returncode)
@@ -109,7 +115,10 @@ class ClaudeCodeTutor:
         if isinstance(envelope, list):  # stream-json style: last message is the result
             envelope = envelope[-1]
         if envelope.get("is_error"):
-            raise ClaudeCodeError(f"claude -p reported an error: {envelope.get('result', '')[:500]}")
+            msg = str(envelope.get("result", ""))[:500]
+            if re.search(r"log ?in|authenticat|api key|credential|not authorized", msg, re.I):
+                raise FatalError(f"Claude Code is not logged in: {msg}. Run `claude` once and log in.")
+            raise ClaudeCodeError(f"claude -p reported an error: {msg}")
         payload = envelope.get("structured_output")
         if payload is None:
             result = envelope.get("result", "")

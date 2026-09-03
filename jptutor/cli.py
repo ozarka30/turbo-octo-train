@@ -13,6 +13,26 @@ from .config import Settings, parse_region
 log = logging.getLogger("jptutor")
 
 
+def load_dotenv(path: Path = Path(".env")) -> int:
+    """Load KEY=value lines from .env into the environment without overriding existing values."""
+    import os
+
+    if not path.is_file():
+        return 0
+    n = 0
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+            n += 1
+    return n
+
+
 def _settings(args) -> Settings:
     s = Settings.from_env()
     if getattr(args, "region", None):
@@ -52,23 +72,26 @@ def _print_usage() -> None:
 
 
 def _run_with_display(args, settings: Settings, body):
-    """Run body(display). With the overlay on, the window owns the main thread and body runs on a thread."""
+    """Run body(display, stop_event). With the overlay on, the window owns the main
+    thread and body runs on a thread; closing the window sets the stop event."""
+    import threading
+
     if args.dry_run:
         from .display import ConsoleDisplay
 
-        return body(ConsoleDisplay())
+        return body(ConsoleDisplay(), threading.Event())
     if not settings.overlay:
-        return body(None)
+        return body(None, threading.Event())
     try:
         from .overlay import Overlay
     except ImportError as e:
         print(f"overlay unavailable ({e}); continuing without it. Use --no-overlay to silence this.", file=sys.stderr)
-        return body(None)
+        return body(None, threading.Event())
     overlay = Overlay(settings.overlay_geometry, settings.overlay_font_size, settings.overlay_opacity)
     result = {}
 
     def worker(display):
-        result["code"] = body(display)
+        result["code"] = body(display, display.stop_event)
 
     overlay.run(worker)
     return result.get("code", 0)
@@ -87,10 +110,12 @@ def cmd_teach(args) -> int:
 
     settings = _settings(args)
 
-    def body(display):
+    def body(display, stop):
         speaker = make_speaker(settings, "console" if args.dry_run else "edge")
-        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings))
+        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings), stop=stop)
         for sentence in args.sentence:
+            if stop.is_set():
+                break
             print(f"\n== {sentence}")
             for lesson in pipe.teach_line(sentence):
                 if args.show:
@@ -110,10 +135,12 @@ def cmd_image(args) -> int:
 
     settings = _settings(args)
 
-    def body(display):
+    def body(display, stop):
         speaker = make_speaker(settings, "console" if args.dry_run else "edge")
-        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings))
+        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings), stop=stop)
         for path in args.image:
+            if stop.is_set():
+                break
             frame = Image.open(path)
             if settings.region:
                 x, y, w, h = settings.region
@@ -137,32 +164,36 @@ def cmd_watch(args) -> int:
     settings = _settings(args)
     if settings.region is None:
         print("warning: no --region given, capturing the whole primary monitor. Set JPTUTOR_REGION or --region x,y,w,h to the dialogue box for better results.", file=sys.stderr)
-    def body(display):
+    def body(display, stop):
         speaker = make_speaker(settings, "console" if args.dry_run else "edge")
-        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings))
+        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display, memory=_memory(settings), stop=stop)
         worker = FrameWorker(pipe, settings.max_queue).start()
         grabber = ScreenGrabber(settings.region)
 
-        if args.manual:
-            print("Manual mode: press Enter to read the screen, Ctrl-C to quit.")
-            try:
-                while True:
+        try:
+            if args.manual:
+                print("Manual mode: press Enter to read the screen, Ctrl-C to quit.")
+                while not stop.is_set():
                     input()
+                    if stop.is_set():
+                        break
                     worker.submit(grabber.grab())
-            except (KeyboardInterrupt, EOFError):
-                pass
-        else:
-            detector = ChangeDetector(settings.change_threshold, settings.stability_frames)
-            print(f"Watching region {settings.region or 'full screen'} every {settings.poll_interval}s. Ctrl-C to quit (or Esc on the overlay).")
-            try:
-                for frame in grabber.watch(detector, settings.poll_interval):
+            else:
+                detector = ChangeDetector(settings.change_threshold, settings.stability_frames)
+                print(f"Watching region {grabber.region} every {settings.poll_interval}s. Ctrl-C to quit (or close the overlay).")
+                for frame in grabber.watch(detector, settings.poll_interval, stop):
                     worker.submit(frame)
-            except KeyboardInterrupt:
-                pass
-        worker.stop()
+        except (KeyboardInterrupt, EOFError):
+            pass
+        code = 0
+        try:
+            worker.stop()
+        except Exception as e:
+            print(f"\nstopped: {e}", file=sys.stderr)
+            code = 1
         print(f"\nbye. lines taught: {len(pipe.lessons)}, replayed from memory: {pipe.replayed}, frames dropped: {worker.dropped}")
         _print_usage()
-        return 0
+        return code
 
     return _run_with_display(args, settings, body)
 
@@ -223,8 +254,6 @@ def cmd_doctor(args) -> int:
     import os
     import shutil
 
-    from .tts import find_player
-
     settings = _settings(args)
     ok = True
 
@@ -249,12 +278,11 @@ def cmd_doctor(args) -> int:
 
     print("Audio")
     try:
-        import pygame  # type: ignore  # noqa: F401
+        from .tts import Player
 
-        row("player", True, "pygame")
-    except ImportError:
-        cmd = find_player()
-        row("player", cmd is not None, cmd[0] if cmd else "none found: pip install pygame, or install ffmpeg / mpg123 / mpv")
+        row("player", True, Player().describe())
+    except Exception as e:
+        row("player", False, str(e))
     try:
         import edge_tts  # noqa: F401
 
@@ -392,6 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    load_dotenv()
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     try:

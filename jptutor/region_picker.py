@@ -9,6 +9,9 @@ from .config import Region
 
 
 def pick_region() -> Optional[Region]:
+    from .overlay import make_dpi_aware
+
+    make_dpi_aware()  # coordinates must be in the same pixels mss grabs
     root = tk.Tk()
     root.attributes("-fullscreen", True)
     root.attributes("-alpha", 0.3)

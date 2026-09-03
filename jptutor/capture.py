@@ -8,6 +8,7 @@ animating the line in).
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Iterator, Optional
 
@@ -69,17 +70,31 @@ class ScreenGrabber:
         if region is None:
             mon = self._sct.monitors[monitor]
             region = (mon["left"], mon["top"], mon["width"], mon["height"])
+        self.set_region(region)
+
+    def set_region(self, region: Region) -> None:
+        """Use this region from now on, clamped to the virtual screen."""
         x, y, w, h = region
-        self._box = {"left": x, "top": y, "width": w, "height": h}
+        virt = self._sct.monitors[0]
+        x0, y0 = max(x, virt["left"]), max(y, virt["top"])
+        x1 = min(x + w, virt["left"] + virt["width"])
+        y1 = min(y + h, virt["top"] + virt["height"])
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            raise ValueError(f"region {region} lies outside the screen {virt}")
+        if (x0, y0, x1 - x0, y1 - y0) != (x, y, w, h):
+            log.warning("region %s clamped to the screen: %s", region, (x0, y0, x1 - x0, y1 - y0))
+        self.region = (x0, y0, x1 - x0, y1 - y0)
+        self._box = {"left": x0, "top": y0, "width": x1 - x0, "height": y1 - y0}
 
     def grab(self) -> Image.Image:
         shot = self._sct.grab(self._box)
         return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
 
-    def watch(self, detector: ChangeDetector, interval: float = 0.5) -> Iterator[Image.Image]:
-        while True:
+    def watch(self, detector: ChangeDetector, interval: float = 0.5, stop: Optional[threading.Event] = None) -> Iterator[Image.Image]:
+        stop = stop or threading.Event()
+        while not stop.is_set():
             frame = self.grab()
             ready = detector.offer(frame)
             if ready is not None:
                 yield ready
-            time.sleep(interval)
+            stop.wait(interval)

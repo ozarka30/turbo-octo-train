@@ -50,4 +50,7 @@ class OcrCache:
         return result
 
     def put(self, png: bytes, result: OcrResult) -> None:
+        # A frame caught mid-typing must be re-read next time, never served from disk.
+        if any(not line.complete for line in result.lines):
+            return
         self._path(png).write_text(result.model_dump_json(), encoding="utf-8")

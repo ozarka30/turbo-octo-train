@@ -8,6 +8,7 @@ draws an always-on-top window over the game.
 from __future__ import annotations
 
 import sys
+import threading
 from typing import Iterable, Optional, Protocol
 
 from .lesson import Lesson
@@ -21,6 +22,8 @@ class Display(Protocol):
 
     def finish(self) -> None: ...
 
+    def show_error(self, message: str) -> None: ...
+
 
 class ConsoleDisplay:
     """Text rendering of the highlight, used by --dry-run and tests."""
@@ -29,6 +32,7 @@ class ConsoleDisplay:
         self.out = out or sys.stdout
         self.sentence = ""
         self.frames = []  # (marked sentence, reading, caption) per utterance
+        self.errors = []
 
     def show_lesson(self, lesson: Lesson) -> None:
         self.sentence = lesson.japanese
@@ -44,6 +48,10 @@ class ConsoleDisplay:
     def finish(self) -> None:
         print("  └", file=self.out)
 
+    def show_error(self, message: str) -> None:
+        self.errors.append(message)
+        print(f"  !! {message}", file=self.out)
+
 
 class NullDisplay:
     def show_lesson(self, lesson: Lesson) -> None: ...
@@ -52,15 +60,24 @@ class NullDisplay:
 
     def finish(self) -> None: ...
 
+    def show_error(self, message: str) -> None: ...
+
 
 class DisplaySpeaker:
-    """Wraps a Speaker so the display is updated right before each utterance is played."""
+    """Wraps a Speaker so the display is updated right before each utterance is played,
+    and playback stops promptly when `stop` is set."""
 
-    def __init__(self, speaker, display: Optional[Display]):
+    def __init__(self, speaker, display: Optional[Display], stop: Optional[threading.Event] = None):
         self.speaker = speaker
         self.display = display or NullDisplay()
+        self.stop = stop or threading.Event()
+        inner_stop = getattr(speaker, "stop", None)
+        if isinstance(inner_stop, threading.Event) and inner_stop is not self.stop:
+            speaker.stop = self.stop  # the audio player watches the same flag
 
     def speak(self, u: Utterance) -> None:
+        if self.stop.is_set():
+            return
         self.display.on_utterance(u)
         self.speaker.speak(u)
 
@@ -70,6 +87,8 @@ class DisplaySpeaker:
         if prepare:
             prepare(script)  # synthesise everything first so highlights and audio stay in step
         for u in script:
+            if self.stop.is_set():
+                break
             self.speak(u)
 
     @property

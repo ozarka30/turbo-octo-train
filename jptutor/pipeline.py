@@ -14,8 +14,9 @@ from PIL import Image
 from .claude_client import TutorBackend
 from .config import Settings
 from .display import Display, DisplaySpeaker, NullDisplay
-from .memory import Memory
+from .errors import FatalError
 from .lesson import Lesson, OcrLine, contains_japanese, split_sentences
+from .memory import Memory
 from .script import build_script
 from .tts import Speaker
 
@@ -75,12 +76,14 @@ class TutorPipeline:
         full_breakdown: bool = True,
         display: Optional[Display] = None,
         memory: Optional[Memory] = None,
+        stop: Optional[threading.Event] = None,
     ):
         self.tutor = tutor
         self.memory = memory
         self.repeat = settings.repeat
         self.display = display or NullDisplay()
-        self.speaker = DisplaySpeaker(speaker, self.display)
+        self.stop = stop or threading.Event()
+        self.speaker = DisplaySpeaker(speaker, self.display, stop=self.stop)
         self.settings = settings
         self.context = context
         self.full_breakdown = full_breakdown
@@ -96,8 +99,13 @@ class TutorPipeline:
 
     # -- single-line path ----------------------------------------------------
     def teach_text(self, japanese: str, speaker: str = "", full_line: str = "") -> Optional[Lesson]:
-        """Teach one sentence. Returns None if it was already taught this session."""
-        if not self.seen.add(japanese):
+        """Teach one sentence. Returns None if it was skipped.
+
+        The sentence is only marked as seen (and stored in memory) once the
+        lesson has been spoken, so a failed API or speech call leaves it eligible
+        for a retry rather than silently lost.
+        """
+        if japanese in self.seen:
             log.info("already taught, skipping: %s", japanese)
             return None
 
@@ -106,26 +114,31 @@ class TutorPipeline:
         if stored is not None and self.repeat != "full":
             if self.repeat == "skip":
                 log.info("known line, skipping: %s", japanese)
-                self.memory.touch_sentence(japanese)
+                self.seen.add(japanese)
                 return None
             log.info("known line (seen %d times), quick replay: %s", stored.times_seen, japanese)
+            self._speak(stored.lesson, full_breakdown=False)
+            self.seen.add(japanese)
             self.memory.touch_sentence(japanese)
             self.replayed += 1
-            self._speak(stored.lesson, full_breakdown=False)
             return stored.lesson
 
         knowledge, recent = self._knowledge()
         lesson = self.tutor.teach(
             japanese, speaker=speaker, context=self.context, full_line=full_line, knowledge=knowledge, recent=recent
         )
+        self._speak(lesson, full_breakdown=self.full_breakdown)
+        self._remember(lesson, japanese, speaker)
+        return lesson
+
+    def _remember(self, lesson: Lesson, japanese: str, speaker: str) -> None:
+        self.seen.add(japanese)
         self.lessons.append(lesson)
         if self.memory:
-            self.memory.record_lesson(lesson, game=self.context, speaker=speaker)
+            self.memory.record_lesson(lesson, game=self.context, speaker=speaker, key_text=japanese)
         line = f"{lesson.japanese} = {lesson.english}; pieces: " + ", ".join(f"{c.japanese} ({c.meaning})" for c in lesson.chunks)
         self._delta.append(line)
         self.history.append(line)
-        self._speak(lesson, full_breakdown=self.full_breakdown)
-        return lesson
 
     def _knowledge(self):
         """(stable snapshot for the cached prompt, delta since the snapshot)."""
@@ -145,20 +158,35 @@ class TutorPipeline:
             self.display.finish()
 
     def teach_line(self, text: str, speaker: str = "") -> List[Lesson]:
-        """Teach a whole dialogue box, one sentence at a time, with the box as context."""
+        """Teach a whole dialogue box, one sentence at a time, with the box as context.
+
+        One sentence failing (API hiccup, speech error) is logged and the next is
+        still taught; fatal errors propagate.
+        """
         sentences = split_sentences(text)
         if len(sentences) == 1:
             lesson = self.teach_text(sentences[0], speaker=speaker)
             return [lesson] if lesson else []
-        if not self.seen.add(text):
+        if text in self.seen:
             return []
         taught = []
         for sentence in sentences:
+            if self.stop.is_set():
+                break
             if not contains_japanese(sentence):
                 continue
-            lesson = self.teach_text(sentence, speaker=speaker, full_line=text)
+            try:
+                lesson = self.teach_text(sentence, speaker=speaker, full_line=text)
+            except FatalError:
+                raise
+            except Exception:
+                log.exception("failed to teach %r", sentence)
+                self.display.show_error(f"Could not teach: {sentence}")
+                continue
             if lesson:
                 taught.append(lesson)
+        if not self.stop.is_set():
+            self.seen.add(text)
         return taught
 
     # -- screenshot path -----------------------------------------------------
@@ -166,6 +194,8 @@ class TutorPipeline:
         result = self.tutor.ocr(frame)
         taught = []
         for line in pick_lines(result.lines):
+            if self.stop.is_set():
+                break
             taught.extend(self.teach_line(line.text, speaker=line.speaker))
         return taught
 
@@ -175,6 +205,7 @@ class FrameWorker:
 
     The capture loop keeps grabbing while a lesson is being spoken; if lessons
     pile up faster than they can be spoken, the oldest queued frames are dropped.
+    A FatalError from the pipeline stops the session and is re-raised by `stop()`.
     """
 
     def __init__(self, pipeline: TutorPipeline, max_queue: int = 3):
@@ -182,6 +213,8 @@ class FrameWorker:
         self.q: "queue.Queue[Optional[Image.Image]]" = queue.Queue(maxsize=max_queue)
         self._thread = threading.Thread(target=self._run, name="jptutor-worker", daemon=True)
         self.dropped = 0
+        self.error: Optional[BaseException] = None
+        self.stop_event = pipeline.stop
 
     def start(self) -> "FrameWorker":
         self._thread.start()
@@ -198,16 +231,36 @@ class FrameWorker:
                 pass
             self.q.put_nowait(frame)
 
-    def stop(self) -> None:
-        self.q.put(None)
-        self._thread.join(timeout=5)
+    def stop(self, timeout: float = 10.0) -> None:
+        """Ask the worker to finish: drop queued frames, cut the current clip, join."""
+        self.stop_event.set()
+        while True:  # drain so the sentinel is next
+            try:
+                self.q.get_nowait()
+                self.dropped += 1
+            except queue.Empty:
+                break
+        try:
+            self.q.put_nowait(None)
+        except queue.Full:
+            pass
+        self._thread.join(timeout=timeout)
+        if self.error is not None:
+            raise self.error
 
     def _run(self) -> None:
-        while True:
+        while not self.stop_event.is_set():
             frame = self.q.get()
             if frame is None:
                 return
             try:
                 self.pipeline.handle_frame(frame)
+            except FatalError as e:
+                log.error("stopping: %s", e)
+                self.error = e
+                self.pipeline.display.show_error(str(e))
+                self.stop_event.set()
+                return
             except Exception:  # keep the loop alive across API hiccups
                 log.exception("failed to process frame")
+                self.pipeline.display.show_error("That line failed, carrying on.")

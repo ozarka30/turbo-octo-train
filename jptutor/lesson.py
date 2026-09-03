@@ -8,7 +8,7 @@ from typing import List, Literal
 from pydantic import BaseModel, Field
 
 JAPANESE_RE = re.compile(r"[぀-ゟ゠-ヿ一-鿿ｦ-ﾟ]")
-_SENTENCE_END = re.compile(r"(?<=[。！？!?])\s*")
+_SENTENCE_END = re.compile(r"(?<=[。！？!?])(?![」』）)])\s*")
 
 
 def contains_japanese(text: str) -> bool:

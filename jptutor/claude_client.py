@@ -11,6 +11,7 @@ import anthropic
 from PIL import Image
 
 from .config import Settings
+from .errors import FatalError
 from .lesson import Lesson, OcrResult
 from .cache import OcrCache, png_bytes
 from .prompts import OCR_SYSTEM, OCR_USER, build_knowledge_block, build_tutor_system, build_tutor_user
@@ -57,12 +58,22 @@ class ClaudeTutor:
     def _cache(self) -> dict:
         return {"type": "ephemeral", "ttl": self.settings.cache_ttl}
 
+    def _parse(self, **kwargs):
+        try:
+            return self.client.beta.messages.parse(**kwargs)
+        except anthropic.AuthenticationError as e:
+            raise FatalError(f"Anthropic API rejected the credentials: {e.message}. Check ANTHROPIC_API_KEY.") from e
+        except anthropic.PermissionDeniedError as e:
+            raise FatalError(f"Anthropic API refused access: {e.message}") from e
+        except anthropic.NotFoundError as e:
+            raise FatalError(f"Model not found: {e.message}. Check JPTUTOR_TUTOR_MODEL / JPTUTOR_OCR_MODEL.") from e
+
     def ocr(self, image: Image.Image) -> OcrResult:
         png = png_bytes(image)
         cached = self.ocr_cache.get(png)
         if cached is not None:
             return cached
-        response = self.client.beta.messages.parse(
+        response = self._parse(
             model=self.settings.ocr_model,
             max_tokens=4096,
             betas=[FALLBACK_BETA],
@@ -107,7 +118,7 @@ class ClaudeTutor:
             {"type": "text", "text": build_tutor_system(self.settings.level), "cache_control": self._cache()},
             {"type": "text", "text": build_knowledge_block(knowledge), "cache_control": self._cache()},
         ]
-        response = self.client.beta.messages.parse(
+        response = self._parse(
             model=self.settings.tutor_model,
             max_tokens=16000,
             betas=[FALLBACK_BETA],

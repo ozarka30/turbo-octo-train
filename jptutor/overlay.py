@@ -8,6 +8,7 @@ window through a queue.
 
 from __future__ import annotations
 
+import platform
 import queue
 import threading
 import tkinter as tk
@@ -26,6 +27,21 @@ HL_BG = "#ffd23f"
 HL_FG = "#101418"
 
 
+def make_dpi_aware() -> None:
+    """On Windows, opt in to per-monitor DPI so Tk coordinates match the pixels mss grabs."""
+    if platform.system() != "Windows":
+        return
+    try:
+        import ctypes
+
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+
 def parse_geometry(value: str) -> Geometry:
     x, y, w, h = (int(p.strip()) for p in value.split(","))
     return (x, y, w, h)
@@ -33,10 +49,12 @@ def parse_geometry(value: str) -> Geometry:
 
 class Overlay:
     def __init__(self, geometry: Optional[Geometry] = None, font_size: int = 34, opacity: float = 0.88):
+        make_dpi_aware()
         self.root = tk.Tk()
         self.root.withdraw()
         self._q: "queue.Queue[tuple]" = queue.Queue()
         self._done = threading.Event()
+        self.stop_event = threading.Event()  # set when the window closes; the tutor thread watches it
         self._worker_error: Optional[BaseException] = None
 
         r = self.root
@@ -74,11 +92,14 @@ class Overlay:
         self.caption.pack(fill="x", padx=pad, pady=(4, pad))
         self.text.bind("<Key>", lambda e: "break")
 
-        # Drag anywhere to move; Escape closes.
+        # Drag anywhere to move; Escape (once the window has focus) or the × closes.
         for widget in (r, self.text, self.reading, self.caption):
             widget.bind("<ButtonPress-1>", self._drag_start)
             widget.bind("<B1-Motion>", self._drag_move)
-        r.bind("<Escape>", lambda e: self.close())
+        r.bind_all("<Escape>", lambda e: self.close())
+        self.close_btn = tk.Label(r, text="×", font=self.small_font, bg=BG, fg=DIM, cursor="hand2")
+        self.close_btn.place(relx=1.0, x=-6, y=2, anchor="ne")
+        self.close_btn.bind("<ButtonPress-1>", lambda e: self.close())
         self._drag = (0, 0)
         self._set_sentence("jptutor is listening…", dim=True)
 
@@ -92,7 +113,11 @@ class Overlay:
     def finish(self) -> None:
         self._q.put(("finish",))
 
+    def show_error(self, message: str) -> None:
+        self._q.put(("error", message))
+
     def close(self) -> None:
+        self.stop_event.set()
         self._q.put(("close",))
 
     # ------------------------------------------------------------- main thread
@@ -108,12 +133,21 @@ class Overlay:
                 self._done.set()
                 self._q.put(("close",))
 
-        threading.Thread(target=body, name="jptutor-tutor", daemon=True).start()
+        thread = threading.Thread(target=body, name="jptutor-tutor", daemon=True)
+        thread.start()
         self.root.deiconify()
         self.root.after(40, self._poll)
         try:
             self.root.mainloop()
         except KeyboardInterrupt:
+            pass
+        # Window gone: tell the tutor thread to wind down and give it a moment to do so
+        # (it finishes the current clip, writes memory, prints the usage line).
+        self.stop_event.set()
+        thread.join(timeout=15)
+        try:
+            self.root.destroy()
+        except tk.TclError:
             pass
         if self._worker_error and not isinstance(self._worker_error, KeyboardInterrupt):
             raise self._worker_error
@@ -149,6 +183,10 @@ class Overlay:
             self._highlight(None)
             self.reading.configure(text="")
             self.caption.configure(text="")
+        elif kind == "error":
+            self.reading.configure(text="")
+            self.caption.configure(text=event[1], fg="#ff7b72")
+            self.root.after(8000, lambda: self.caption.configure(fg=FG))
 
     def _set_sentence(self, sentence: str, dim: bool = False) -> None:
         t = self.text
@@ -166,6 +204,7 @@ class Overlay:
             t.tag_add("hl", f"1.0+{a}c", f"1.0+{b}c")
 
     def _drag_start(self, e) -> None:
+        self.root.focus_force()  # so Escape reaches us on platforms that never focus borderless windows
         self._drag = (e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y())
 
     def _drag_move(self, e) -> None:

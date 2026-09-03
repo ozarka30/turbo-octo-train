@@ -8,6 +8,7 @@ from PIL import Image
 
 from jptutor.backends import resolve_backend
 from jptutor.claude_code_backend import ClaudeCodeError, ClaudeCodeTutor
+from jptutor.errors import FatalError
 from jptutor.config import Settings
 from jptutor.fake import SAMPLE_LESSON
 from jptutor.prompts import LEVEL_GUIDANCE
@@ -44,7 +45,8 @@ def test_teach_builds_headless_command(tmp_path, monkeypatch):
     assert lesson.english == SAMPLE_LESSON.english
 
     args, kw = calls[0]
-    assert args[:2] == ["claude", "-p"]
+    assert args[0].endswith("claude") and args[1] == "-p"
+    assert kw["encoding"] == "utf-8"
     assert args[args.index("--output-format") + 1] == "json"
     assert args[args.index("--model") + 1] == "claude-opus-5"
     assert args[args.index("--effort") + 1] == "medium"
@@ -91,8 +93,8 @@ def test_falls_back_to_result_text_and_reports_errors(tmp_path, monkeypatch):
     tutor, _ = make(tmp_path, monkeypatch, json.dumps({"is_error": False, "result": SAMPLE_LESSON.model_dump_json()}))
     assert tutor.teach("x").japanese == SAMPLE_LESSON.japanese
 
-    tutor, _ = make(tmp_path, monkeypatch, json.dumps({"is_error": True, "result": "Not logged in"}))
-    with pytest.raises(ClaudeCodeError, match="Not logged in"):
+    tutor, _ = make(tmp_path, monkeypatch, json.dumps({"is_error": True, "result": "Something odd happened"}))
+    with pytest.raises(ClaudeCodeError, match="Something odd"):
         tutor.teach("x")
 
     tutor, _ = make(tmp_path, monkeypatch, "", returncode=1)
@@ -114,7 +116,13 @@ def test_claude_code_usage_is_recorded(tmp_path, monkeypatch):
 def test_missing_binary_gives_install_hint(tmp_path, monkeypatch):
     monkeypatch.setattr(shutil, "which", lambda name: None)
     tutor = ClaudeCodeTutor(Settings(cache_dir=tmp_path), binary="claude-nope")
-    with pytest.raises(ClaudeCodeError, match="Claude Code CLI not found"):
+    with pytest.raises(FatalError, match="Claude Code CLI not found"):
+        tutor.teach("x")
+
+
+def test_not_logged_in_is_fatal(tmp_path, monkeypatch):
+    tutor, _ = make(tmp_path, monkeypatch, json.dumps({"is_error": True, "result": "Not logged in. Please run /login"}))
+    with pytest.raises(FatalError, match="not logged in"):
         tutor.teach("x")
 
 
