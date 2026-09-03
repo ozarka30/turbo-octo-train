@@ -22,10 +22,24 @@ It is three parts glued together:
 git clone <this repo> && cd turbo-octo-train
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
-cp .env.example .env    # put your ANTHROPIC_API_KEY in it, then `export $(cat .env)` or use direnv
+jptutor doctor          # tells you what is missing
 ```
 
 Audio playback needs one of: `pip install pygame`, or `ffmpeg` (`ffplay`), `mpg123`, or `mpv` on your PATH. macOS has `afplay` built in.
+
+### Connecting to Claude
+
+There are two backends. `jptutor` picks one automatically: the API if `ANTHROPIC_API_KEY` is set, otherwise Claude Code if the `claude` command is installed. Force one with `--backend` or `JPTUTOR_BACKEND`.
+
+**Claude subscription (Pro/Max), via Claude Code.** The Anthropic API itself only accepts API keys, so the tutor runs on your subscription by shelling out to Claude Code's headless mode, `claude -p`, which uses the login you already have in Claude Code and returns validated JSON through `--json-schema`.
+
+1. Install Claude Code: https://code.claude.com/docs/en/overview
+2. Run `claude` once in a terminal and log in with your claude.ai account.
+3. Make sure `ANTHROPIC_API_KEY` is **not** set in that shell, then `jptutor doctor` should say `backend: claude-code`.
+
+Each line costs one `claude -p` process for OCR and one for the lesson, and both count against your plan's usage limits like any other Claude Code session. Measured on Opus at the default `high` effort: about 6 seconds for OCR and 30 to 40 seconds for the lesson. `JPTUTOR_TUTOR_EFFORT=medium` or `--model sonnet` speeds it up.
+
+**API key.** Create a key at https://platform.claude.com/settings/keys, put it in `.env` (see `.env.example`), and export it. This path is faster per line and is billed per token to your Console workspace, separately from a claude.ai subscription.
 
 ## Try it without a game
 
@@ -70,8 +84,9 @@ All settings are environment variables (see `.env.example`); the common ones als
 
 | Variable                   | Default              | Meaning                                              |
 | -------------------------- | -------------------- | ---------------------------------------------------- |
-| `ANTHROPIC_API_KEY`        |                      | Required                                             |
-| `JPTUTOR_TUTOR_MODEL`      | `claude-opus-5`      | Model that writes the lesson                         |
+| `ANTHROPIC_API_KEY`        |                      | Only for the `api` backend                           |
+| `JPTUTOR_BACKEND`          | `auto`               | `api`, `claude-code` (subscription), or `auto`       |
+| `JPTUTOR_TUTOR_MODEL`      | `claude-opus-5`      | Model that writes the lesson (`opus`/`sonnet` aliases work with `claude-code`) |
 | `JPTUTOR_OCR_MODEL`        | `claude-opus-5`      | Model that reads the screenshot                      |
 | `JPTUTOR_TUTOR_EFFORT`     | `high`               | `low` to `max`; lower is cheaper and faster          |
 | `JPTUTOR_OCR_EFFORT`       | `low`                |                                                      |
@@ -114,7 +129,9 @@ The teaching style lives in one place, `TUTOR_SYSTEM` in `jptutor/prompts.py`. E
 ```
 jptutor/
   capture.py        screen grab + change detection (ChangeDetector, ScreenGrabber)
-  claude_client.py  Claude calls: ocr(image) and teach(text) with structured outputs
+  backends.py       picks api vs claude-code
+  claude_client.py  API backend: ocr(image) and teach(text) via the Anthropic SDK, structured outputs
+  claude_code_backend.py  subscription backend: the same two calls through `claude -p --json-schema`
   lesson.py         pydantic models: OcrResult, Lesson, Chunk, BuildStep
   prompts.py        system prompts
   script.py         Lesson -> ordered Utterances (the Paul Noble pacing)
@@ -128,7 +145,7 @@ tests/              unit tests, all offline (the Claude tests use a mock HTTP tr
 
 ## Cost notes
 
-Each new line costs one small vision call plus one lesson call. The system prompts are cached, so repeated calls are cheap on input. If cost matters more than lesson quality, set `JPTUTOR_OCR_MODEL=claude-sonnet-5` and/or `JPTUTOR_TUTOR_EFFORT=medium`. Requests opt into Anthropic's server-side refusal fallback, so a stray safety decline is retried on another model automatically instead of leaving a silent gap mid-game.
+Each new line costs one small vision call plus one lesson call. On the subscription backend that is two short Claude Code sessions per line against your plan's limits; `JPTUTOR_OCR_MODEL=sonnet` and `JPTUTOR_TUTOR_EFFORT=medium` stretch them further. On the API backend the system prompts are cached so repeated calls are cheap on input, and requests opt into Anthropic's server-side refusal fallback, so a stray safety decline is retried on another model automatically instead of leaving a silent gap mid-game.
 
 ## Roadmap ideas
 

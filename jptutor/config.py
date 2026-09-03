@@ -22,6 +22,7 @@ def parse_region(value: str) -> Region:
 
 @dataclass
 class Settings:
+    backend: str = "auto"  # auto | api | claude-code
     tutor_model: str = "claude-opus-5"
     ocr_model: str = "claude-opus-5"
     tutor_effort: str = "high"
@@ -47,6 +48,7 @@ class Settings:
     def from_env(cls, env: Optional[dict] = None) -> "Settings":
         e = os.environ if env is None else env
         s = cls()
+        s.backend = e.get("JPTUTOR_BACKEND", s.backend)
         s.tutor_model = e.get("JPTUTOR_TUTOR_MODEL", s.tutor_model)
         s.ocr_model = e.get("JPTUTOR_OCR_MODEL", s.ocr_model)
         s.tutor_effort = e.get("JPTUTOR_TUTOR_EFFORT", s.tutor_effort)

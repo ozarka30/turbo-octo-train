@@ -21,17 +21,15 @@ def _settings(args) -> Settings:
         s.level = args.level
     if getattr(args, "model", None):
         s.tutor_model = args.model
+    if getattr(args, "backend", None):
+        s.backend = args.backend
     return s
 
 
 def _tutor(settings: Settings, offline: bool = False):
-    if offline:
-        from .fake import FakeTutor
+    from .backends import make_tutor
 
-        return FakeTutor()
-    from .claude_client import ClaudeTutor
-
-    return ClaudeTutor(settings)
+    return make_tutor(settings, offline=offline)
 
 
 def cmd_teach(args) -> int:
@@ -158,6 +156,61 @@ def cmd_say(args) -> int:
     return 0
 
 
+def cmd_doctor(args) -> int:
+    """Check that the pieces needed to run are present."""
+    import os
+    import shutil
+
+    from .tts import find_player
+
+    settings = _settings(args)
+    ok = True
+
+    def row(label, good, detail):
+        nonlocal ok
+        ok = ok and good
+        print(f"  [{'ok' if good else '!!'}] {label}: {detail}")
+
+    print("Claude access")
+    claude_bin = shutil.which("claude")
+    row("Claude Code CLI", bool(claude_bin), claude_bin or "not on PATH (needed for the subscription backend)")
+    row("ANTHROPIC_API_KEY", True, "set (api backend available)" if os.environ.get("ANTHROPIC_API_KEY") else "not set (fine if you use your subscription)")
+    try:
+        from .backends import resolve_backend
+
+        row("backend", True, f"{resolve_backend(settings)} (JPTUTOR_BACKEND={settings.backend})")
+    except SystemExit as e:
+        row("backend", False, str(e).splitlines()[0])
+
+    print("Audio")
+    try:
+        import pygame  # type: ignore  # noqa: F401
+
+        row("player", True, "pygame")
+    except ImportError:
+        cmd = find_player()
+        row("player", cmd is not None, cmd[0] if cmd else "none found: pip install pygame, or install ffmpeg / mpg123 / mpv")
+    try:
+        import edge_tts  # noqa: F401
+
+        row("edge-tts", True, f"voices {settings.ja_voice} / {settings.en_voice}")
+    except ImportError:
+        row("edge-tts", False, "pip install edge-tts")
+
+    print("Screen")
+    try:
+        import mss
+
+        with mss.mss() as sct:
+            mons = sct.monitors[1:]
+        row("capture", True, f"{len(mons)} monitor(s): " + ", ".join(f"{m['width']}x{m['height']}" for m in mons))
+    except Exception as e:  # no display, etc.
+        row("capture", False, f"{type(e).__name__}: {e}")
+    row("region", True, f"{settings.region}" if settings.region else "not set: whole primary monitor (use --manual or set JPTUTOR_REGION)")
+    print("\nall good" if ok else "\nfix the items marked !! above")
+    return 0 if ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="jptutor", description="AI Japanese tutor for video games.")
     p.add_argument("-v", "--verbose", action="store_true")
@@ -166,6 +219,7 @@ def build_parser() -> argparse.ArgumentParser:
     def common(sp, capture=False):
         sp.add_argument("--level", choices=["beginner", "intermediate", "advanced"])
         sp.add_argument("--model", help="tutor model id (default claude-opus-5)")
+        sp.add_argument("--backend", choices=["auto", "api", "claude-code"], help="api = ANTHROPIC_API_KEY, claude-code = your Claude subscription via `claude -p` (default: auto)")
         sp.add_argument("--context", default="", help="game name or scene, passed to the tutor")
         sp.add_argument("--quick", action="store_true", help="Japanese + English only, skip the breakdown")
         sp.add_argument("--dry-run", action="store_true", help="print the lesson instead of speaking it")
@@ -196,6 +250,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("select-region", help="drag to select the dialogue box; prints JPTUTOR_REGION")
     sp.set_defaults(func=cmd_select_region)
+
+    sp = sub.add_parser("doctor", help="check Claude access, audio, and screen capture")
+    sp.add_argument("--backend", choices=["auto", "api", "claude-code"])
+    sp.add_argument("--region")
+    sp.set_defaults(func=cmd_doctor)
 
     sp = sub.add_parser("voices", help="list text-to-speech voices")
     sp.add_argument("--locale", default="ja")
