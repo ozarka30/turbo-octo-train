@@ -31,12 +31,16 @@ def make(tmp_path, monkeypatch, stdout, returncode=0):
 
 
 def envelope(payload):
-    return json.dumps({"type": "result", "is_error": False, "result": "done", "structured_output": payload, "session_id": "s"})
+    return json.dumps({
+        "type": "result", "is_error": False, "result": "done", "structured_output": payload, "session_id": "s",
+        "total_cost_usd": 0.0421,
+        "usage": {"input_tokens": 12, "cache_creation_input_tokens": 900, "cache_read_input_tokens": 3000, "output_tokens": 700},
+    })
 
 
 def test_teach_builds_headless_command(tmp_path, monkeypatch):
     tutor, calls = make(tmp_path, monkeypatch, envelope(SAMPLE_LESSON.model_dump()))
-    lesson = tutor.teach("学校に行きます。", speaker="ユウ", context="Pokemon", knowledge="学校 = school")
+    lesson = tutor.teach("学校に行きます。", speaker="ユウ", context="Pokemon", knowledge="学校 = school", recent="駅 = station")
     assert lesson.english == SAMPLE_LESSON.english
 
     args, kw = calls[0]
@@ -51,10 +55,11 @@ def test_teach_builds_headless_command(tmp_path, monkeypatch):
     assert "Bash" in args[i + 1:] and "StructuredOutput" not in args[i + 1:]
     schema = json.loads(args[args.index("--json-schema") + 1])
     assert "chunks" in schema["properties"]
-    assert LEVEL_GUIDANCE["beginner"] in args[args.index("--system-prompt") + 1]
+    system = args[args.index("--system-prompt") + 1]
+    assert LEVEL_GUIDANCE["beginner"] in system and "学校 = school" in system  # memory rides in the cached system prompt
     prompt = kw["input"]
     assert args[-1] != prompt  # prompt travels on stdin, not as a positional
-    assert "学校に行きます。" in prompt and "ユウ" in prompt and "学校 = school" in prompt
+    assert "学校に行きます。" in prompt and "ユウ" in prompt and "駅 = station" in prompt
     assert kw["cwd"] == str(tmp_path / "claude-work")
 
 
@@ -93,6 +98,17 @@ def test_falls_back_to_result_text_and_reports_errors(tmp_path, monkeypatch):
     tutor, _ = make(tmp_path, monkeypatch, "", returncode=1)
     with pytest.raises(ClaudeCodeError, match="exit 1"):
         tutor.teach("x")
+
+
+def test_claude_code_usage_is_recorded(tmp_path, monkeypatch):
+    from jptutor.usage import get_meter
+
+    get_meter().calls.clear()
+    tutor, _ = make(tmp_path, monkeypatch, envelope(SAMPLE_LESSON.model_dump()))
+    tutor.teach("x")
+    call = get_meter().calls[-1]
+    assert call.backend == "claude-code" and call.cache_read == 3000 and call.cost_usd == 0.0421
+    assert "77% served from cache" in get_meter().summary()
 
 
 def test_missing_binary_gives_install_hint(tmp_path, monkeypatch):

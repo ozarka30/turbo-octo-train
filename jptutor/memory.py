@@ -45,6 +45,17 @@ CREATE TABLE IF NOT EXISTS pieces (
     last_sentence TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (japanese, reading)
 );
+CREATE TABLE IF NOT EXISTS usage (
+    ts REAL NOT NULL,
+    backend TEXT NOT NULL,
+    model TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    cache_read INTEGER NOT NULL,
+    cache_write INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cost_usd REAL
+);
 CREATE TABLE IF NOT EXISTS patterns (
     text TEXT PRIMARY KEY,
     times_seen INTEGER NOT NULL DEFAULT 1,
@@ -141,8 +152,26 @@ class Memory:
 
     def forget(self) -> None:
         with self._lock, self._db:
-            for table in ("sentences", "pieces", "patterns"):
+            for table in ("sentences", "pieces", "patterns", "usage"):
                 self._db.execute(f"DELETE FROM {table}")
+
+    # ------------------------------------------------------------------ usage
+    def record_usage(self, call) -> None:
+        with self._lock, self._db:
+            self._db.execute(
+                "INSERT INTO usage (ts, backend, model, kind, input_tokens, cache_read, cache_write, output_tokens, cost_usd) VALUES (?,?,?,?,?,?,?,?,?)",
+                (call.ts, call.backend, call.model, call.kind, call.input_tokens, call.cache_read, call.cache_write, call.output_tokens, call.cost_usd),
+            )
+
+    def usage_totals(self) -> dict:
+        with self._lock:
+            r = self._db.execute(
+                """SELECT COUNT(*) AS calls, COALESCE(SUM(input_tokens),0) AS input, COALESCE(SUM(cache_read),0) AS cache_read,
+                          COALESCE(SUM(cache_write),0) AS cache_write, COALESCE(SUM(output_tokens),0) AS output,
+                          COALESCE(SUM(cost_usd),0) AS cost, SUM(cost_usd IS NOT NULL) AS priced FROM usage"""
+            ).fetchone()
+        total_in = r["input"] + r["cache_read"] + r["cache_write"]
+        return {**dict(r), "cached_pct": (100.0 * r["cache_read"] / total_in) if total_in else 0.0}
 
     # ------------------------------------------------------------------- read
     def lookup_sentence(self, japanese: str) -> Optional[StoredSentence]:

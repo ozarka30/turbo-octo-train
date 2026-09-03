@@ -27,7 +27,9 @@ from pydantic import BaseModel
 
 from .config import Settings
 from .lesson import Lesson, OcrResult
-from .prompts import OCR_SYSTEM, build_tutor_system, build_tutor_user
+from .cache import OcrCache, png_bytes
+from .prompts import OCR_SYSTEM, build_knowledge_block, build_tutor_system, build_tutor_user
+from .usage import get_meter
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +58,8 @@ class ClaudeCodeTutor:
         # and screenshots saved here are readable without a permission prompt.
         self.workdir = settings.cache_dir / "claude-work"
         self.workdir.mkdir(parents=True, exist_ok=True)
+        self.ocr_cache = OcrCache(settings.cache_dir, settings.ocr_model)
+        self.meter = get_meter()
 
     # ---------------------------------------------------------------- helpers
     def _base_args(self, model: str, effort: str, schema: dict, max_turns: int) -> List[str]:
@@ -71,7 +75,7 @@ class ClaudeCodeTutor:
             "--max-turns", str(max_turns),
         ]
 
-    def _invoke(self, args: List[str], prompt: str, model_cls: Type[T]) -> T:
+    def _invoke(self, args: List[str], prompt: str, model_cls: Type[T], *, model: str = "", kind: str = "") -> T:
         if shutil.which(self.binary) is None and not Path(self.binary).exists():
             raise ClaudeCodeError(INSTALL_HINT)
         started = time.monotonic()
@@ -91,10 +95,13 @@ class ClaudeCodeTutor:
         log.debug("claude -p finished in %.1fs (exit %s)", time.monotonic() - started, proc.returncode)
         if proc.returncode != 0:
             raise ClaudeCodeError(f"claude -p failed (exit {proc.returncode}): {(proc.stderr or proc.stdout).strip()[:500]}")
-        return self._parse(proc.stdout, model_cls)
+        result, envelope = self._parse(proc.stdout, model_cls)
+        if envelope:
+            self.meter.record_claude_code(model, kind, envelope)
+        return result
 
     @staticmethod
-    def _parse(stdout: str, model_cls: Type[T]) -> T:
+    def _parse(stdout: str, model_cls: Type[T]):
         try:
             envelope = json.loads(stdout)
         except json.JSONDecodeError as e:
@@ -110,33 +117,41 @@ class ClaudeCodeTutor:
                 payload = json.loads(result)
             except (json.JSONDecodeError, TypeError) as e:
                 raise ClaudeCodeError(f"no structured_output in claude -p response: {result[:300]!r}") from e
-        return model_cls.model_validate(payload)
+        return model_cls.model_validate(payload), envelope
 
     # ---------------------------------------------------------------- backend
     def ocr(self, image: Image.Image) -> OcrResult:
+        png = png_bytes(image)
+        cached = self.ocr_cache.get(png)
+        if cached is not None:
+            return cached
         fd, name = tempfile.mkstemp(prefix="shot-", suffix=".png", dir=self.workdir)
         os.close(fd)
         path = Path(name)
         try:
-            image.convert("RGB").save(path, format="PNG", optimize=True)
+            path.write_bytes(png)
             args = self._base_args(self.settings.ocr_model, self.settings.ocr_effort, OcrResult.model_json_schema(), max_turns=6)
             args += ["--append-system-prompt", OCR_SYSTEM, "--allowedTools", "Read", "StructuredOutput"]
             prompt = (
                 f"Use the Read tool to look at the screenshot file ./{path.name} in this directory, "
                 "then list every piece of Japanese text in it."
             )
-            return self._invoke(args, prompt, OcrResult)
+            result = self._invoke(args, prompt, OcrResult, model=self.settings.ocr_model, kind="ocr")
+            self.ocr_cache.put(png, result)
+            return result
         finally:
             path.unlink(missing_ok=True)
 
-    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", knowledge: str = "") -> Lesson:
-        prompt = build_tutor_user(japanese, speaker=speaker, context=context, full_line=full_line, knowledge=knowledge)
+    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", knowledge: str = "", recent: str = "") -> Lesson:
+        prompt = build_tutor_user(japanese, speaker=speaker, context=context, full_line=full_line, recent=recent)
         args = self._base_args(self.settings.tutor_model, self.settings.tutor_effort, Lesson.model_json_schema(), max_turns=4)
         # --json-schema output arrives through the StructuredOutput tool, so it must stay allowed;
         # everything else is removed so the lesson never touches files or the shell.
-        args += ["--system-prompt", build_tutor_system(self.settings.level)]
+        # Memory snapshot rides in the system prompt so Claude Code's own prompt cache covers it.
+        system = build_tutor_system(self.settings.level) + "\n" + build_knowledge_block(knowledge)
+        args += ["--system-prompt", system]
         args += ["--allowedTools", "StructuredOutput", "--disallowedTools", *NO_TOOLS]
-        return self._invoke(args, prompt, Lesson)
+        return self._invoke(args, prompt, Lesson, model=self.settings.tutor_model, kind="lesson")
 
 
 def claude_code_available(binary: str = "claude") -> Optional[str]:

@@ -85,6 +85,37 @@ def test_knowledge_reaches_the_tutor(tmp_path):
     assert "学校 (school)" in seen["knowledge"] and "学校に行きます。 = I'm going to school." in seen["knowledge"]
 
 
+def test_knowledge_snapshot_is_stable_between_refreshes(tmp_path):
+    """The cached block must not change every lesson; the delta carries the rest."""
+    mem = Memory(tmp_path / "m.sqlite")
+    calls = []
+
+    class Spy(FakeTutor):
+        def teach(self, japanese, **kw):
+            calls.append((kw["knowledge"], kw["recent"]))
+            return super().teach(japanese, **kw)
+
+    pipe = TutorPipeline(Spy(), ConsoleSpeaker(out=io.StringIO()), Settings(knowledge_refresh=3), memory=mem)
+    for i in range(5):
+        pipe.teach_text(f"文{i}。")
+    snapshots = [k for k, _ in calls]
+    assert snapshots[0] == snapshots[1] == snapshots[2]  # lessons 1-3 share one snapshot
+    assert snapshots[3] != snapshots[0] and snapshots[3] == snapshots[4]  # refreshed at lesson 4
+    assert calls[0][1] == "" and "文0。" in calls[1][1] and "文1。" in calls[2][1]
+    assert calls[3][1] == "" and "文3。" in calls[4][1]  # delta resets with the snapshot
+
+
+def test_usage_persisted_in_memory(tmp_path):
+    from jptutor.usage import Call
+
+    mem = Memory(tmp_path / "m.sqlite")
+    mem.record_usage(Call(backend="api", model="claude-opus-5", kind="lesson", input_tokens=100, cache_read=900, cache_write=0, output_tokens=50, cost_usd=0.01))
+    mem.record_usage(Call(backend="api", model="claude-opus-5", kind="ocr", input_tokens=1000, cache_read=0, cache_write=0, output_tokens=20, cost_usd=None))
+    u = mem.usage_totals()
+    assert u["calls"] == 2 and u["cache_read"] == 900 and u["priced"] == 1 and abs(u["cost"] - 0.01) < 1e-9
+    assert round(u["cached_pct"]) == 45
+
+
 def test_export_anki(tmp_path):
     mem = Memory(tmp_path / "m.sqlite")
     mem.record_lesson(SAMPLE_LESSON)

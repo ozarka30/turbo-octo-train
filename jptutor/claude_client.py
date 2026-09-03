@@ -12,7 +12,9 @@ from PIL import Image
 
 from .config import Settings
 from .lesson import Lesson, OcrResult
-from .prompts import OCR_SYSTEM, OCR_USER, build_tutor_system, build_tutor_user
+from .cache import OcrCache, png_bytes
+from .prompts import OCR_SYSTEM, OCR_USER, build_knowledge_block, build_tutor_system, build_tutor_user
+from .usage import get_meter
 
 log = logging.getLogger(__name__)
 
@@ -26,13 +28,7 @@ class RefusedError(RuntimeError):
 class TutorBackend(Protocol):
     def ocr(self, image: Image.Image) -> OcrResult: ...
 
-    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", knowledge: str = "") -> Lesson: ...
-
-
-def _png_b64(image: Image.Image) -> str:
-    buf = io.BytesIO()
-    image.convert("RGB").save(buf, format="PNG", optimize=True)
-    return base64.standard_b64encode(buf.getvalue()).decode("ascii")
+    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", knowledge: str = "", recent: str = "") -> Lesson: ...
 
 
 def _check_refusal(response) -> None:
@@ -55,22 +51,31 @@ class ClaudeTutor:
     def __init__(self, settings: Settings, client: Optional[anthropic.Anthropic] = None):
         self.settings = settings
         self.client = client or anthropic.Anthropic()
+        self.ocr_cache = OcrCache(settings.cache_dir, settings.ocr_model)
+        self.meter = get_meter()
+
+    def _cache(self) -> dict:
+        return {"type": "ephemeral", "ttl": self.settings.cache_ttl}
 
     def ocr(self, image: Image.Image) -> OcrResult:
+        png = png_bytes(image)
+        cached = self.ocr_cache.get(png)
+        if cached is not None:
+            return cached
         response = self.client.beta.messages.parse(
             model=self.settings.ocr_model,
             max_tokens=4096,
             betas=[FALLBACK_BETA],
             fallbacks="default",
             output_config={"effort": self.settings.ocr_effort},
-            system=[{"type": "text", "text": OCR_SYSTEM, "cache_control": {"type": "ephemeral"}}],
+            system=[{"type": "text", "text": OCR_SYSTEM, "cache_control": self._cache()}],
             messages=[
                 {
                     "role": "user",
                     "content": [
                         {
                             "type": "image",
-                            "source": {"type": "base64", "media_type": "image/png", "data": _png_b64(image)},
+                            "source": {"type": "base64", "media_type": "image/png", "data": base64.standard_b64encode(png).decode("ascii")},
                         },
                         {"type": "text", "text": OCR_USER},
                     ],
@@ -79,7 +84,10 @@ class ClaudeTutor:
             output_format=OcrResult,
         )
         _check_refusal(response)
-        return response.parsed_output
+        self.meter.record_api("api", self.settings.ocr_model, "ocr", response.usage, self.settings.cache_ttl)
+        result = response.parsed_output
+        self.ocr_cache.put(png, result)
+        return result
 
     def teach(
         self,
@@ -89,30 +97,27 @@ class ClaudeTutor:
         context: str = "",
         full_line: str = "",
         knowledge: str = "",
+        recent: str = "",
     ) -> Lesson:
-        user = build_tutor_user(japanese, speaker=speaker, context=context, full_line=full_line, knowledge=knowledge)
+        user = build_tutor_user(japanese, speaker=speaker, context=context, full_line=full_line, recent=recent)
+        # Two cached blocks: the frozen tutor prompt, then the memory snapshot, which only
+        # changes every few lessons. Per-lesson detail goes in the user message, after
+        # the breakpoints, so it never invalidates them.
+        system = [
+            {"type": "text", "text": build_tutor_system(self.settings.level), "cache_control": self._cache()},
+            {"type": "text", "text": build_knowledge_block(knowledge), "cache_control": self._cache()},
+        ]
         response = self.client.beta.messages.parse(
             model=self.settings.tutor_model,
             max_tokens=16000,
             betas=[FALLBACK_BETA],
             fallbacks="default",
             output_config={"effort": self.settings.tutor_effort},
-            system=[
-                {
-                    "type": "text",
-                    "text": build_tutor_system(self.settings.level),
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
+            system=system,
             messages=[{"role": "user", "content": user}],
             output_format=Lesson,
         )
         _check_refusal(response)
-        usage = response.usage
-        log.debug(
-            "lesson tokens: in=%s cached=%s out=%s",
-            usage.input_tokens,
-            getattr(usage, "cache_read_input_tokens", 0),
-            usage.output_tokens,
-        )
+        call = self.meter.record_api("api", self.settings.tutor_model, "lesson", response.usage, self.settings.cache_ttl)
+        log.debug("lesson tokens: in=%s cached=%s written=%s out=%s", call.input_tokens, call.cache_read, call.cache_write, call.output_tokens)
         return response.parsed_output

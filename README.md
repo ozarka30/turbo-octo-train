@@ -132,6 +132,8 @@ All settings are environment variables (see `.env.example`); the common ones als
 | `JPTUTOR_REGION`           | whole screen         | `x,y,width,height` of the dialogue box               |
 | `JPTUTOR_POLL_INTERVAL`    | `0.5`                | Seconds between screen grabs                         |
 | `JPTUTOR_CHANGE_THRESHOLD` | `0.02`               | Fraction of the region that must change to trigger   |
+| `JPTUTOR_CACHE_TTL`        | `1h`                 | Prompt-cache TTL on the API backend: `5m` or `1h`    |
+| `JPTUTOR_KNOWLEDGE_REFRESH`| `6`                  | Lessons between memory-summary snapshots (cached)    |
 | `JPTUTOR_MEMORY`           | `~/.jptutor/memory.sqlite` | Memory file, or `0` to disable                 |
 | `JPTUTOR_REPEAT`           | `quick`              | Line from an earlier session: `quick`, `skip`, `full`|
 | `JPTUTOR_OVERLAY`          | `1`                  | `0` to disable the highlight window                  |
@@ -179,7 +181,9 @@ jptutor/
   prompts.py        system prompts
   script.py         Lesson -> ordered Utterances (the Paul Noble pacing) with highlight spans
   display.py        Display interface, console highlighter, speaker wrapper that syncs them
-  memory.py         long-term memory (SQLite): sentences, pieces, patterns, tiered summary, Anki export
+  memory.py         long-term memory (SQLite): sentences, pieces, patterns, tiered summary, usage log, Anki export
+  cache.py          OCR results cached on disk by screenshot hash
+  usage.py          token and cost accounting; the summary printed at exit
   overlay.py        the on-screen highlight window (tkinter)
   tts.py            edge-tts synthesis, disk cache, playback; ConsoleSpeaker for dry runs
   pipeline.py       OCR -> filter -> dedupe -> lesson -> speak; background FrameWorker
@@ -189,9 +193,17 @@ jptutor/
 tests/              unit tests, all offline (the Claude tests use a mock HTTP transport)
 ```
 
-## Cost notes
+## Saving on usage
 
-Each new line costs one small vision call plus one lesson call. On the subscription backend that is two short Claude Code sessions per line against your plan's limits; `JPTUTOR_OCR_MODEL=sonnet` and `JPTUTOR_TUTOR_EFFORT=medium` stretch them further. On the API backend the system prompts are cached so repeated calls are cheap on input, and requests opt into Anthropic's server-side refusal fallback, so a stray safety decline is retried on another model automatically instead of leaving a silent gap mid-game.
+Each new line costs one small vision call plus one lesson call. Several layers keep that as cheap as possible:
+
+- **Prompt caching (API backend).** Every request carries two cached system blocks: the frozen tutor prompt and a snapshot of your memory summary. The snapshot is refreshed only every 6 lessons (`JPTUTOR_KNOWLEDGE_REFRESH`), and what was taught since rides in the user message after the cache breakpoints, so the big part of the input is served from cache at a tenth of the price. The cache TTL is one hour by default (`JPTUTOR_CACHE_TTL=5m` for the cheaper short TTL if your lines never stop for more than five minutes), so the entry survives a battle or a stretch of exploring. On the subscription backend the same stable system prompt lets Claude Code's own prompt cache do the equivalent.
+- **Memory replay.** A line you met in an earlier session is spoken from memory with no Claude call at all (`--repeat quick`, the default).
+- **OCR cache.** Screenshots are hashed; an identical frame is never sent twice, even across restarts.
+- **Change detection.** Nothing is sent until the dialogue box has changed and settled.
+- **Usage report.** Every command prints a line at exit like `Claude usage this session: 4 calls, 14,210 input tokens (78% served from cache), 2,930 output tokens, about $0.11`, and `jptutor memory` shows the all-time total. On the subscription backend the dollar figure is Claude Code's own estimate of what the calls would have cost on the API.
+
+The two levers that trade quality for cost are `JPTUTOR_TUTOR_EFFORT=medium` (less thinking per lesson) and `JPTUTOR_OCR_MODEL=claude-sonnet-5` (a cheaper model for the easy vision step). Requests on the API backend also opt into Anthropic's server-side refusal fallback, so a stray safety decline is retried on another model instead of leaving a silent gap mid-game.
 
 ## Roadmap ideas
 

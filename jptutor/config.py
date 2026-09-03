@@ -45,6 +45,9 @@ class Settings:
     overlay_font_size: int = 34
     overlay_opacity: float = 0.88
 
+    cache_ttl: str = "1h"  # prompt-cache TTL for the API backend: 5m | 1h
+    knowledge_refresh: int = 6  # lessons between memory-summary snapshots (the snapshot is what gets cached)
+
     memory_path: Optional[Path] = field(default_factory=lambda: Path.home() / ".jptutor" / "memory.sqlite")
     repeat: str = "quick"  # what to do with a line taught in an earlier session: quick | skip | full
 
@@ -73,6 +76,8 @@ class Settings:
             s.overlay_geometry = parse_region(e["JPTUTOR_OVERLAY_GEOMETRY"])
         s.overlay_font_size = int(e.get("JPTUTOR_OVERLAY_FONT_SIZE", s.overlay_font_size))
         s.overlay_opacity = float(e.get("JPTUTOR_OVERLAY_OPACITY", s.overlay_opacity))
+        s.cache_ttl = e.get("JPTUTOR_CACHE_TTL", s.cache_ttl)
+        s.knowledge_refresh = int(e.get("JPTUTOR_KNOWLEDGE_REFRESH", s.knowledge_refresh))
         mem = e.get("JPTUTOR_MEMORY")
         if mem is not None:
             s.memory_path = None if mem in ("0", "", "off", "none") else Path(mem).expanduser()

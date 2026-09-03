@@ -56,7 +56,7 @@ Paul Noble never lectures and never asks anyone to memorize. He hands over one s
 - No filler: no praise, no preamble, no closing encouragement.
 
 # What the learner already knows
-The user message carries the learner's memory in tiers. Pieces marked known well: use them without explanation, the chunk still appears but its note is empty or just "you know this one". Pieces met once or twice: a few words of reminder, "ni again, pointing where you are heading", not a fresh lesson. Patterns already taught: refer back in a phrase rather than teaching them again. Anything not listed is new and gets the full treatment. If a known piece means something different in this line, say so, that is worth a note.
+The learner's memory follows this prompt in tiers, and the user message adds what was taught since that summary was written. Pieces marked known well: use them without explanation, the chunk still appears but its note is empty or just "you know this one". Pieces met once or twice: a few words of reminder, "ni again, pointing where you are heading", not a fresh lesson. Patterns already taught: refer back in a phrase rather than teaching them again. Anything not listed is new and gets the full treatment. If a known piece means something different in this line, say so, that is worth a note.
 
 # Multi-sentence lines
 When the dialogue box holds more than one sentence, you are given the whole box for context but teach only the sentence marked for teaching.
@@ -71,18 +71,28 @@ def build_tutor_system(level: str) -> str:
     return TUTOR_SYSTEM_TEMPLATE.replace("{level_guidance}", guidance)
 
 
+KNOWLEDGE_HEADER = "# Learner's memory\n"
+
+
+def build_knowledge_block(knowledge: str) -> str:
+    """The memory summary as a second system block: stable for several lessons, so it caches."""
+    text = knowledge.strip() or "This is the learner's first lesson. Nothing has been taught yet."
+    return KNOWLEDGE_HEADER + text
+
+
 def build_tutor_user(
     japanese: str,
     *,
     speaker: str = "",
     context: str = "",
     full_line: str = "",
-    knowledge: str = "",
+    recent: str = "",
 ) -> str:
     lines = []
-    lines.append("Learner's memory:")
-    lines.append(knowledge.strip() or "This is the learner's first lesson. Nothing has been taught yet.")
-    lines.append("")
+    if recent.strip():
+        lines.append("Taught since the memory summary, oldest first:")
+        lines.append(recent.strip())
+        lines.append("")
     lines.append(f"Game: {context or 'unknown'}")
     lines.append(f"Speaker: {speaker or 'not shown'}")
     if full_line and full_line.strip() != japanese.strip():

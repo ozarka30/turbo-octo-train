@@ -36,8 +36,19 @@ def _memory(settings: Settings):
     if settings.memory_path is None:
         return None
     from .memory import Memory
+    from .usage import get_meter
 
-    return Memory(settings.memory_path)
+    mem = Memory(settings.memory_path)
+    get_meter().listeners.append(mem.record_usage)
+    return mem
+
+
+def _print_usage() -> None:
+    from .usage import get_meter
+
+    meter = get_meter()
+    if meter.calls:
+        print(meter.summary())
 
 
 def _run_with_display(args, settings: Settings, body):
@@ -84,6 +95,7 @@ def cmd_teach(args) -> int:
             for lesson in pipe.teach_line(sentence):
                 if args.show:
                     print(lesson.model_dump_json(indent=2, ensure_ascii=False))
+        _print_usage()
         return 0
 
     return _run_with_display(args, settings, body)
@@ -110,6 +122,7 @@ def cmd_image(args) -> int:
             taught = pipe.handle_frame(frame)
             if not taught:
                 print("  (no new dialogue found)")
+        _print_usage()
         return 0
 
     return _run_with_display(args, settings, body)
@@ -148,6 +161,7 @@ def cmd_watch(args) -> int:
                 pass
         worker.stop()
         print(f"\nbye. lines taught: {len(pipe.lessons)}, replayed from memory: {pipe.replayed}, frames dropped: {worker.dropped}")
+        _print_usage()
         return 0
 
     return _run_with_display(args, settings, body)
@@ -281,6 +295,12 @@ def cmd_memory(args) -> int:
         print(f"patterns    : {st['patterns']}")
         if st["games"]:
             print(f"games       : {', '.join(st['games'])}")
+        u = mem.usage_totals()
+        if u["calls"]:
+            line = f"usage       : {u['calls']} Claude calls, {u['input'] + u['cache_read'] + u['cache_write']:,} input tokens ({u['cached_pct']:.0f}% from cache), {u['output']:,} output"
+            if u["priced"]:
+                line += f", about ${u['cost']:.2f} all time"
+            print(line)
     elif what == "vocab":
         for r in mem.pieces(order=args.order, limit=args.limit):
             tag = "known" if r["times_seen"] >= 3 else f"x{r['times_seen']}"

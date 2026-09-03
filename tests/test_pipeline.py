@@ -88,5 +88,6 @@ def test_tutor_user_prompt_mentions_box_only_when_multi_sentence():
 
     single = build_tutor_user("はい。", speaker="A", context="G")
     assert "Whole dialogue box" not in single and "Sentence to teach: はい。" in single
-    multi = build_tutor_user("危険だ。", full_line="近づくな。危険だ。", knowledge="Sentence: x = y")
+    multi = build_tutor_user("危険だ。", full_line="近づくな。危険だ。", recent="Sentence: x = y")
     assert "Whole dialogue box: 近づくな。危険だ。" in multi and "Sentence: x = y" in multi
+    assert "Taught since the memory summary" in multi and "Taught since" not in single

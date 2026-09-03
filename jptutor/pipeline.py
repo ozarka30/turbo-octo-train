@@ -88,6 +88,11 @@ class TutorPipeline:
         self.history: List[str] = []  # this session only, used when there is no memory
         self.lessons: List[Lesson] = []
         self.replayed = 0
+        # The memory summary is snapshotted every few lessons so the cached prompt prefix
+        # stays byte-identical in between; lessons since the snapshot go in as a small delta.
+        self._snapshot: Optional[str] = None
+        self._snapshot_at = 0
+        self._delta: List[str] = []
 
     # -- single-line path ----------------------------------------------------
     def teach_text(self, japanese: str, speaker: str = "", full_line: str = "") -> Optional[Lesson]:
@@ -109,24 +114,28 @@ class TutorPipeline:
             self._speak(stored.lesson, full_breakdown=False)
             return stored.lesson
 
+        knowledge, recent = self._knowledge()
         lesson = self.tutor.teach(
-            japanese, speaker=speaker, context=self.context, full_line=full_line, knowledge=self._knowledge()
+            japanese, speaker=speaker, context=self.context, full_line=full_line, knowledge=knowledge, recent=recent
         )
         self.lessons.append(lesson)
         if self.memory:
             self.memory.record_lesson(lesson, game=self.context, speaker=speaker)
-        else:
-            self.history.append(f"{lesson.japanese} = {lesson.english}")
-            self.history.extend(f"  {c.japanese} ({c.reading}) = {c.meaning}" for c in lesson.chunks)
+        line = f"{lesson.japanese} = {lesson.english}; pieces: " + ", ".join(f"{c.japanese} ({c.meaning})" for c in lesson.chunks)
+        self._delta.append(line)
+        self.history.append(line)
         self._speak(lesson, full_breakdown=self.full_breakdown)
         return lesson
 
-    def _knowledge(self) -> str:
-        if self.memory:
-            return self.memory.summary().render()
-        if not self.history:
-            return ""
-        return "Taught this session, oldest first:\n" + "\n".join(self.history[-60:])
+    def _knowledge(self):
+        """(stable snapshot for the cached prompt, delta since the snapshot)."""
+        if not self.memory:
+            return "", "\n".join(self.history[-40:])
+        if self._snapshot is None or len(self.lessons) - self._snapshot_at >= max(1, self.settings.knowledge_refresh):
+            self._snapshot = self.memory.summary().render()
+            self._snapshot_at = len(self.lessons)
+            self._delta = []
+        return self._snapshot, "\n".join(self._delta)
 
     def _speak(self, lesson: Lesson, *, full_breakdown: bool) -> None:
         self.display.show_lesson(lesson)
