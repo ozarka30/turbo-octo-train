@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 from .config import Settings
 from .lesson import Lesson, OcrResult
-from .prompts import OCR_SYSTEM, TUTOR_SYSTEM, TUTOR_USER_TEMPLATE
+from .prompts import OCR_SYSTEM, build_tutor_system, build_tutor_user
 
 log = logging.getLogger(__name__)
 
@@ -129,17 +129,12 @@ class ClaudeCodeTutor:
         finally:
             path.unlink(missing_ok=True)
 
-    def teach(self, japanese: str, *, speaker: str = "", context: str = "", history: List[str] = ()) -> Lesson:
-        prompt = TUTOR_USER_TEMPLATE.format(
-            history="\n".join(history) if history else "(nothing yet)",
-            context=context or "unknown game",
-            speaker=speaker or "unknown",
-            japanese=japanese,
-        )
+    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", history: List[str] = ()) -> Lesson:
+        prompt = build_tutor_user(japanese, speaker=speaker, context=context, full_line=full_line, history=history)
         args = self._base_args(self.settings.tutor_model, self.settings.tutor_effort, Lesson.model_json_schema(), max_turns=4)
         # --json-schema output arrives through the StructuredOutput tool, so it must stay allowed;
         # everything else is removed so the lesson never touches files or the shell.
-        args += ["--system-prompt", TUTOR_SYSTEM.format(level=self.settings.level)]
+        args += ["--system-prompt", build_tutor_system(self.settings.level)]
         args += ["--allowedTools", "StructuredOutput", "--disallowedTools", *NO_TOOLS]
         return self._invoke(args, prompt, Lesson)
 

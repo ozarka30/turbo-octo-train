@@ -9,6 +9,7 @@ from PIL import Image
 from jptutor.claude_client import ClaudeTutor, FALLBACK_BETA
 from jptutor.config import Settings
 from jptutor.fake import SAMPLE_LESSON
+from jptutor.prompts import LEVEL_GUIDANCE
 
 
 def make_client(captured, body_text):
@@ -50,7 +51,7 @@ def test_teach_request_shape_and_parsing():
     assert body["output_config"]["effort"] == "high"
     assert body["output_config"]["format"]["type"] == "json_schema"
     assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
-    assert "intermediate" in body["system"][0]["text"]
+    assert LEVEL_GUIDANCE["intermediate"] in body["system"][0]["text"]
     assert "学校 = school" in body["messages"][0]["content"]
     assert "ユウ" in body["messages"][0]["content"]
 

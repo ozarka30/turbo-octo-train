@@ -29,8 +29,10 @@ def build_script(lesson: Lesson, *, quiz_pause: float = 2.0, full_breakdown: boo
 
     # 1. Hear it: the line in Japanese, slowly, then at speed.
     s.append(Utterance("ja", lesson.japanese, slow=True, pause_after=0.6))
-    # 2. Understand it: English translation.
+    # 2. Understand it: English translation, plus the register when it matters.
     s.append(Utterance("en", lesson.english, pause_after=0.6))
+    if full_breakdown and lesson.tone.strip():
+        s.append(Utterance("en", lesson.tone.strip(), pause_after=0.5))
 
     if not full_breakdown:
         s.append(Utterance("ja", lesson.japanese, pause_after=0.5))
@@ -49,10 +51,11 @@ def build_script(lesson: Lesson, *, quiz_pause: float = 2.0, full_breakdown: boo
     if lesson.literal.strip():
         s.append(Utterance("en", f"So, piece by piece, it reads: {lesson.literal.strip()}", pause_after=0.5))
 
-    # 5. Rebuild it: question, thinking pause, answer.
+    # 5. Rebuild it: question, thinking pause, answer. The answer is spoken from
+    # the kanji text: the Japanese voice parses mixed text better than bare kana.
     for step in lesson.build_up:
         s.append(Utterance("en", step.prompt_en, pause_after=quiz_pause))
-        s.append(Utterance("ja", step.reading or step.japanese, pause_after=0.6))
+        s.append(Utterance("ja", step.japanese or step.reading, pause_after=0.6))
 
     # 6. The takeaway.
     if lesson.pattern.strip():

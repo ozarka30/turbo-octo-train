@@ -42,9 +42,9 @@ def cmd_teach(args) -> int:
     pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick)
     for sentence in args.sentence:
         print(f"\n== {sentence}")
-        lesson = pipe.teach_text(sentence)
-        if lesson and args.show:
-            print(lesson.model_dump_json(indent=2, ensure_ascii=False) if hasattr(lesson, "model_dump_json") else lesson)
+        for lesson in pipe.teach_line(sentence):
+            if args.show:
+                print(lesson.model_dump_json(indent=2, ensure_ascii=False))
     return 0
 
 

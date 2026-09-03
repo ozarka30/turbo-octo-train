@@ -8,18 +8,26 @@ from typing import List, Literal
 from pydantic import BaseModel, Field
 
 JAPANESE_RE = re.compile(r"[぀-ゟ゠-ヿ一-鿿ｦ-ﾟ]")
+_SENTENCE_END = re.compile(r"(?<=[。！？!?])\s*")
 
 
 def contains_japanese(text: str) -> bool:
     return bool(JAPANESE_RE.search(text))
 
 
+def split_sentences(text: str) -> List[str]:
+    """Split a dialogue box into sentences on Japanese sentence enders, keeping the ender."""
+    parts = [p.strip() for p in _SENTENCE_END.split(text.strip()) if p and p.strip()]
+    return parts or [text.strip()]
+
+
 class OcrLine(BaseModel):
     text: str = Field(description="The Japanese text exactly as written on screen, with no furigana.")
-    kind: Literal["dialogue", "narration", "menu", "system", "other"] = Field(
-        description="dialogue = a character speaking; narration = story text; menu/system = UI labels, button prompts, HUD."
+    kind: Literal["dialogue", "narration", "choice", "menu", "system", "other"] = Field(
+        description="dialogue = a character speaking; narration = story text; choice = an option the player picks; menu/system = UI labels, button prompts, HUD."
     )
     speaker: str = Field(default="", description="Speaker name if shown next to the line, otherwise empty.")
+    complete: bool = Field(default=True, description="False if the line is still being typed out or is cut off mid-phrase.")
 
 
 class OcrResult(BaseModel):
@@ -53,4 +61,8 @@ class Lesson(BaseModel):
     )
     pattern: str = Field(
         description="The one reusable takeaway: the grammar pattern or structure this sentence demonstrates, explained in one or two sentences."
+    )
+    tone: str = Field(
+        default="",
+        description="One spoken sentence on the register of the line (rough, polite, archaic, cute, who talks like this) when notable; empty when plain.",
     )

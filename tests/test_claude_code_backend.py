@@ -10,6 +10,7 @@ from jptutor.backends import resolve_backend
 from jptutor.claude_code_backend import ClaudeCodeError, ClaudeCodeTutor
 from jptutor.config import Settings
 from jptutor.fake import SAMPLE_LESSON
+from jptutor.prompts import LEVEL_GUIDANCE
 
 
 class Proc:
@@ -50,7 +51,7 @@ def test_teach_builds_headless_command(tmp_path, monkeypatch):
     assert "Bash" in args[i + 1:] and "StructuredOutput" not in args[i + 1:]
     schema = json.loads(args[args.index("--json-schema") + 1])
     assert "chunks" in schema["properties"]
-    assert "beginner" in args[args.index("--system-prompt") + 1]
+    assert LEVEL_GUIDANCE["beginner"] in args[args.index("--system-prompt") + 1]
     prompt = kw["input"]
     assert args[-1] != prompt  # prompt travels on stdin, not as a positional
     assert "学校に行きます。" in prompt and "ユウ" in prompt and "学校 = school" in prompt

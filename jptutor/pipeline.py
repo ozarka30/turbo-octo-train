@@ -13,13 +13,13 @@ from PIL import Image
 
 from .claude_client import TutorBackend
 from .config import Settings
-from .lesson import Lesson, OcrLine, contains_japanese
+from .lesson import Lesson, OcrLine, contains_japanese, split_sentences
 from .script import build_script
 from .tts import Speaker
 
 log = logging.getLogger(__name__)
 
-TEACHABLE_KINDS = ("dialogue", "narration")
+TEACHABLE_KINDS = ("dialogue", "narration", "choice")
 
 
 def normalize(text: str) -> str:
@@ -54,7 +54,7 @@ def pick_lines(lines: Iterable[OcrLine], min_chars: int = 2) -> List[OcrLine]:
     out = []
     for line in lines:
         text = line.text.strip()
-        if line.kind not in TEACHABLE_KINDS:
+        if line.kind not in TEACHABLE_KINDS or not line.complete:
             continue
         if not contains_japanese(text) or len(normalize(text)) < min_chars:
             continue
@@ -74,24 +74,43 @@ class TutorPipeline:
         self.lessons: List[Lesson] = []
 
     # -- single-line path ----------------------------------------------------
-    def teach_text(self, japanese: str, speaker: str = "") -> Optional[Lesson]:
+    def teach_text(self, japanese: str, speaker: str = "", full_line: str = "") -> Optional[Lesson]:
+        """Teach one sentence. Returns None if it was already taught this session."""
         if not self.seen.add(japanese):
             log.info("already taught, skipping: %s", japanese)
             return None
-        lesson = self.tutor.teach(japanese, speaker=speaker, context=self.context, history=self.history[-40:])
+        lesson = self.tutor.teach(
+            japanese, speaker=speaker, context=self.context, full_line=full_line, history=self.history[-60:]
+        )
         self.lessons.append(lesson)
-        self.history.extend(f"{c.japanese} = {c.meaning}" for c in lesson.chunks)
+        self.history.append(f"Sentence: {lesson.japanese} = {lesson.english}")
+        self.history.extend(f"  {c.japanese} ({c.reading}) = {c.meaning}" for c in lesson.chunks)
         self.speaker.speak_all(build_script(lesson, full_breakdown=self.full_breakdown))
         return lesson
+
+    def teach_line(self, text: str, speaker: str = "") -> List[Lesson]:
+        """Teach a whole dialogue box, one sentence at a time, with the box as context."""
+        sentences = split_sentences(text)
+        if len(sentences) == 1:
+            lesson = self.teach_text(sentences[0], speaker=speaker)
+            return [lesson] if lesson else []
+        if not self.seen.add(text):
+            return []
+        taught = []
+        for sentence in sentences:
+            if not contains_japanese(sentence):
+                continue
+            lesson = self.teach_text(sentence, speaker=speaker, full_line=text)
+            if lesson:
+                taught.append(lesson)
+        return taught
 
     # -- screenshot path -----------------------------------------------------
     def handle_frame(self, frame: Image.Image) -> List[Lesson]:
         result = self.tutor.ocr(frame)
         taught = []
         for line in pick_lines(result.lines):
-            lesson = self.teach_text(line.text, speaker=line.speaker)
-            if lesson:
-                taught.append(lesson)
+            taught.extend(self.teach_line(line.text, speaker=line.speaker))
         return taught
 
 

@@ -74,9 +74,11 @@ You can also run the pipeline on saved screenshots: `jptutor image shot1.png sho
 ### How a session behaves
 
 - Lines already taught are remembered and skipped when the game re-renders them.
-- Every chunk taught is passed back to Claude on the next line, so it says "you already know ni" instead of re-explaining it.
+- A dialogue box with several sentences is taught one sentence at a time, with the whole box passed along as context.
+- Every sentence and chunk taught is passed back to Claude on the next line, so it says "you already know ni" instead of re-explaining it.
+- Lines the OCR flags as still being typed out are skipped until they settle.
 - Screen capture keeps running while a lesson is being spoken. If you race ahead, the oldest queued frames are dropped rather than played back late.
-- Menus, HUD numbers, and button prompts are OCR'd but not taught. Only `dialogue` and `narration` lines get a lesson.
+- Menus, HUD numbers, and button prompts are OCR'd but not taught. Only `dialogue`, `narration`, and `choice` lines get a lesson.
 
 ## Configuration
 
@@ -104,6 +106,7 @@ Claude returns a `Lesson` (see `jptutor/lesson.py`), and `jptutor/script.py` tur
 ```
 [ja slow] 学校に行きます。
 [en]      I'm going to school.
+[en]      (tone, only when notable: "This is blunt, rough speech, the kind of order a soldier barks at you.")
 [en]      Let's break that down.
 [ja slow] がっこう
 [en]      school. Gakkou. The kou at the end is the same kou as in koukou, high school.
@@ -122,7 +125,7 @@ Claude returns a `Lesson` (see `jptutor/lesson.py`), and `jptutor/script.py` tur
 [en]      I'm going to school.
 ```
 
-The teaching style lives in one place, `TUTOR_SYSTEM` in `jptutor/prompts.py`. Edit it to change how the tutor talks.
+The teaching style lives in one place, `jptutor/prompts.py`. Edit it to change how the tutor talks. The prompts are written around one fact: every field is spoken, Japanese fields by a Japanese voice and English fields by an English voice. So English fields must not contain kana or kanji (Japanese pieces are named in romaji, which the English voice can say), and readings are spelled the way they sound (the topic particle は is written わ) because the Japanese voice reads kana literally. Per-level guidance for beginner, intermediate, and advanced learners is in `LEVEL_GUIDANCE` in the same file.
 
 ## Project layout
 

@@ -57,3 +57,36 @@ def test_frame_worker_drops_oldest_when_full():
     worker.submit(Image.new("RGB", (10, 10)))
     worker.submit(Image.new("RGB", (10, 10)))
     assert worker.dropped == 1 and worker.q.qsize() == 1
+
+
+def test_split_sentences():
+    from jptutor.lesson import split_sentences
+
+    assert split_sentences("この街には近づくな。危険だ。") == ["この街には近づくな。", "危険だ。"]
+    assert split_sentences("はい") == ["はい"]
+    assert split_sentences("何？　まさか！") == ["何？", "まさか！"]
+
+
+def test_multi_sentence_box_teaches_each_sentence_with_context():
+    tutor = FakeTutor(ocr_lines=[OcrLine(text="この街には近づくな。危険だ。", kind="dialogue", speaker="ユウ")])
+    pipe = TutorPipeline(tutor, ConsoleSpeaker(out=open("/dev/null", "w")), Settings())
+    taught = pipe.handle_frame(Image.new("RGB", (10, 10)))
+    assert [l.japanese for l in taught] == ["この街には近づくな。", "危険だ。"]
+    assert pipe.handle_frame(Image.new("RGB", (10, 10))) == []  # whole box remembered
+
+
+def test_incomplete_and_choice_lines():
+    lines = [
+        OcrLine(text="この街には近づ", kind="dialogue", complete=False),
+        OcrLine(text="彼を助ける", kind="choice"),
+    ]
+    assert [l.text for l in pick_lines(lines)] == ["彼を助ける"]
+
+
+def test_tutor_user_prompt_mentions_box_only_when_multi_sentence():
+    from jptutor.prompts import build_tutor_user
+
+    single = build_tutor_user("はい。", speaker="A", context="G")
+    assert "Whole dialogue box" not in single and "Sentence to teach: はい。" in single
+    multi = build_tutor_user("危険だ。", full_line="近づくな。危険だ。", history=["Sentence: x = y"])
+    assert "Whole dialogue box: 近づくな。危険だ。" in multi and "Sentence: x = y" in multi

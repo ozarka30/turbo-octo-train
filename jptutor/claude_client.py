@@ -12,7 +12,7 @@ from PIL import Image
 
 from .config import Settings
 from .lesson import Lesson, OcrResult
-from .prompts import OCR_SYSTEM, TUTOR_SYSTEM, TUTOR_USER_TEMPLATE
+from .prompts import OCR_SYSTEM, OCR_USER, build_tutor_system, build_tutor_user
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ class RefusedError(RuntimeError):
 class TutorBackend(Protocol):
     def ocr(self, image: Image.Image) -> OcrResult: ...
 
-    def teach(self, japanese: str, *, speaker: str = "", context: str = "", history: List[str] = ()) -> Lesson: ...
+    def teach(self, japanese: str, *, speaker: str = "", context: str = "", full_line: str = "", history: List[str] = ()) -> Lesson: ...
 
 
 def _png_b64(image: Image.Image) -> str:
@@ -72,7 +72,7 @@ class ClaudeTutor:
                             "type": "image",
                             "source": {"type": "base64", "media_type": "image/png", "data": _png_b64(image)},
                         },
-                        {"type": "text", "text": "List the Japanese text in this screenshot."},
+                        {"type": "text", "text": OCR_USER},
                     ],
                 }
             ],
@@ -87,14 +87,10 @@ class ClaudeTutor:
         *,
         speaker: str = "",
         context: str = "",
+        full_line: str = "",
         history: List[str] = (),
     ) -> Lesson:
-        user = TUTOR_USER_TEMPLATE.format(
-            history="\n".join(history) if history else "(nothing yet)",
-            context=context or "unknown game",
-            speaker=speaker or "unknown",
-            japanese=japanese,
-        )
+        user = build_tutor_user(japanese, speaker=speaker, context=context, full_line=full_line, history=history)
         response = self.client.beta.messages.parse(
             model=self.settings.tutor_model,
             max_tokens=16000,
@@ -104,7 +100,7 @@ class ClaudeTutor:
             system=[
                 {
                     "type": "text",
-                    "text": TUTOR_SYSTEM.format(level=self.settings.level),
+                    "text": build_tutor_system(self.settings.level),
                     "cache_control": {"type": "ephemeral"},
                 }
             ],
