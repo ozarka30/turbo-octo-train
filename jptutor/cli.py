@@ -23,7 +23,32 @@ def _settings(args) -> Settings:
         s.tutor_model = args.model
     if getattr(args, "backend", None):
         s.backend = args.backend
+    if getattr(args, "no_overlay", False):
+        s.overlay = False
     return s
+
+
+def _run_with_display(args, settings: Settings, body):
+    """Run body(display). With the overlay on, the window owns the main thread and body runs on a thread."""
+    if args.dry_run:
+        from .display import ConsoleDisplay
+
+        return body(ConsoleDisplay())
+    if not settings.overlay:
+        return body(None)
+    try:
+        from .overlay import Overlay
+    except ImportError as e:
+        print(f"overlay unavailable ({e}); continuing without it. Use --no-overlay to silence this.", file=sys.stderr)
+        return body(None)
+    overlay = Overlay(settings.overlay_geometry, settings.overlay_font_size, settings.overlay_opacity)
+    result = {}
+
+    def worker(display):
+        result["code"] = body(display)
+
+    overlay.run(worker)
+    return result.get("code", 0)
 
 
 def _tutor(settings: Settings, offline: bool = False):
@@ -38,14 +63,18 @@ def cmd_teach(args) -> int:
     from .tts import make_speaker
 
     settings = _settings(args)
-    speaker = make_speaker(settings, "console" if args.dry_run else "edge")
-    pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick)
-    for sentence in args.sentence:
-        print(f"\n== {sentence}")
-        for lesson in pipe.teach_line(sentence):
-            if args.show:
-                print(lesson.model_dump_json(indent=2, ensure_ascii=False))
-    return 0
+
+    def body(display):
+        speaker = make_speaker(settings, "console" if args.dry_run else "edge")
+        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display)
+        for sentence in args.sentence:
+            print(f"\n== {sentence}")
+            for lesson in pipe.teach_line(sentence):
+                if args.show:
+                    print(lesson.model_dump_json(indent=2, ensure_ascii=False))
+        return 0
+
+    return _run_with_display(args, settings, body)
 
 
 def cmd_image(args) -> int:
@@ -56,18 +85,22 @@ def cmd_image(args) -> int:
     from .tts import make_speaker
 
     settings = _settings(args)
-    speaker = make_speaker(settings, "console" if args.dry_run else "edge")
-    pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick)
-    for path in args.image:
-        frame = Image.open(path)
-        if settings.region:
-            x, y, w, h = settings.region
-            frame = frame.crop((x, y, x + w, y + h))
-        print(f"\n== {path}")
-        taught = pipe.handle_frame(frame)
-        if not taught:
-            print("  (no new dialogue found)")
-    return 0
+
+    def body(display):
+        speaker = make_speaker(settings, "console" if args.dry_run else "edge")
+        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display)
+        for path in args.image:
+            frame = Image.open(path)
+            if settings.region:
+                x, y, w, h = settings.region
+                frame = frame.crop((x, y, x + w, y + h))
+            print(f"\n== {path}")
+            taught = pipe.handle_frame(frame)
+            if not taught:
+                print("  (no new dialogue found)")
+        return 0
+
+    return _run_with_display(args, settings, body)
 
 
 def cmd_watch(args) -> int:
@@ -79,30 +112,33 @@ def cmd_watch(args) -> int:
     settings = _settings(args)
     if settings.region is None:
         print("warning: no --region given, capturing the whole primary monitor. Set JPTUTOR_REGION or --region x,y,w,h to the dialogue box for better results.", file=sys.stderr)
-    speaker = make_speaker(settings, "console" if args.dry_run else "edge")
-    pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick)
-    worker = FrameWorker(pipe, settings.max_queue).start()
-    grabber = ScreenGrabber(settings.region)
+    def body(display):
+        speaker = make_speaker(settings, "console" if args.dry_run else "edge")
+        pipe = TutorPipeline(_tutor(settings, args.offline), speaker, settings, context=args.context, full_breakdown=not args.quick, display=display)
+        worker = FrameWorker(pipe, settings.max_queue).start()
+        grabber = ScreenGrabber(settings.region)
 
-    if args.manual:
-        print("Manual mode: press Enter to read the screen, Ctrl-C to quit.")
-        try:
-            while True:
-                input()
-                worker.submit(grabber.grab())
-        except (KeyboardInterrupt, EOFError):
-            pass
-    else:
-        detector = ChangeDetector(settings.change_threshold, settings.stability_frames)
-        print(f"Watching region {settings.region or 'full screen'} every {settings.poll_interval}s. Ctrl-C to quit.")
-        try:
-            for frame in grabber.watch(detector, settings.poll_interval):
-                worker.submit(frame)
-        except KeyboardInterrupt:
-            pass
-    worker.stop()
-    print(f"\nbye. lines taught: {len(pipe.lessons)}, frames dropped: {worker.dropped}")
-    return 0
+        if args.manual:
+            print("Manual mode: press Enter to read the screen, Ctrl-C to quit.")
+            try:
+                while True:
+                    input()
+                    worker.submit(grabber.grab())
+            except (KeyboardInterrupt, EOFError):
+                pass
+        else:
+            detector = ChangeDetector(settings.change_threshold, settings.stability_frames)
+            print(f"Watching region {settings.region or 'full screen'} every {settings.poll_interval}s. Ctrl-C to quit (or Esc on the overlay).")
+            try:
+                for frame in grabber.watch(detector, settings.poll_interval):
+                    worker.submit(frame)
+            except KeyboardInterrupt:
+                pass
+        worker.stop()
+        print(f"\nbye. lines taught: {len(pipe.lessons)}, frames dropped: {worker.dropped}")
+        return 0
+
+    return _run_with_display(args, settings, body)
 
 
 def cmd_snapshot(args) -> int:
@@ -222,7 +258,8 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--backend", choices=["auto", "api", "claude-code"], help="api = ANTHROPIC_API_KEY, claude-code = your Claude subscription via `claude -p` (default: auto)")
         sp.add_argument("--context", default="", help="game name or scene, passed to the tutor")
         sp.add_argument("--quick", action="store_true", help="Japanese + English only, skip the breakdown")
-        sp.add_argument("--dry-run", action="store_true", help="print the lesson instead of speaking it")
+        sp.add_argument("--dry-run", action="store_true", help="print the lesson (with text highlighting) instead of speaking it")
+        sp.add_argument("--no-overlay", action="store_true", help="do not show the on-screen highlight window")
         sp.add_argument("--offline", action="store_true", help="use a canned sample lesson instead of calling Claude (demo)")
         if capture:
             sp.add_argument("--region", help="x,y,width,height of the dialogue box")

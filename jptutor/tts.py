@@ -118,12 +118,14 @@ class EdgeSpeaker:
         if u.pause_after > 0:
             time.sleep(u.pause_after)
 
-    def speak_all(self, script: Iterable[Utterance]) -> None:
-        script = list(script)
-        # Pre-synthesise the next clip while the current one plays would be nicer;
-        # for now synthesise all up front so playback has no gaps.
+    def prepare(self, script: Iterable[Utterance]) -> None:
+        """Synthesise every clip up front so playback (and the highlight) has no gaps."""
         for u in script:
             self.synth(u)
+
+    def speak_all(self, script: Iterable[Utterance]) -> None:
+        script = list(script)
+        self.prepare(script)
         for u in script:
             self.speak(u)
 

@@ -1,0 +1,173 @@
+"""An always-on-top overlay window that shows the sentence and highlights the
+piece being read or explained. Needs tkinter (bundled with most Pythons).
+
+Tk must run on the main thread, so `Overlay.run(worker)` runs the tutor on a
+background thread and the window on the main thread; the pipeline talks to the
+window through a queue.
+"""
+
+from __future__ import annotations
+
+import queue
+import threading
+import tkinter as tk
+import tkinter.font as tkfont
+from typing import Callable, Optional, Tuple
+
+from .lesson import Lesson
+from .script import Utterance
+
+Geometry = Tuple[int, int, int, int]  # x, y, w, h
+
+BG = "#101418"
+FG = "#f2f2f2"
+DIM = "#9aa4ad"
+HL_BG = "#ffd23f"
+HL_FG = "#101418"
+
+
+def parse_geometry(value: str) -> Geometry:
+    x, y, w, h = (int(p.strip()) for p in value.split(","))
+    return (x, y, w, h)
+
+
+class Overlay:
+    def __init__(self, geometry: Optional[Geometry] = None, font_size: int = 34, opacity: float = 0.88):
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self._q: "queue.Queue[tuple]" = queue.Queue()
+        self._done = threading.Event()
+        self._worker_error: Optional[BaseException] = None
+
+        r = self.root
+        r.overrideredirect(True)
+        r.attributes("-topmost", True)
+        try:
+            r.attributes("-alpha", opacity)
+        except tk.TclError:
+            pass
+        r.configure(bg=BG)
+
+        sw, sh = r.winfo_screenwidth(), r.winfo_screenheight()
+        if geometry is None:
+            w = int(sw * 0.7)
+            h = int(font_size * 5.2)
+            geometry = ((sw - w) // 2, sh - h - 60, w, h)
+        x, y, w, h = geometry
+        r.geometry(f"{w}x{h}+{x}+{y}")
+
+        self.ja_font = tkfont.Font(family="TkDefaultFont", size=font_size)
+        self.small_font = tkfont.Font(family="TkDefaultFont", size=max(12, font_size // 2))
+        self.cap_font = tkfont.Font(family="TkDefaultFont", size=max(13, int(font_size * 0.55)))
+
+        pad = 14
+        self.text = tk.Text(
+            r, height=1, font=self.ja_font, bg=BG, fg=FG, bd=0, highlightthickness=0,
+            wrap="char", cursor="arrow", insertwidth=0, selectbackground=BG,
+        )
+        self.text.tag_configure("hl", background=HL_BG, foreground=HL_FG)
+        self.text.tag_configure("center", justify="center")
+        self.text.pack(fill="x", padx=pad, pady=(pad, 4))
+        self.reading = tk.Label(r, font=self.small_font, bg=BG, fg=HL_BG)
+        self.reading.pack(fill="x", padx=pad)
+        self.caption = tk.Label(r, font=self.cap_font, bg=BG, fg=FG, wraplength=w - 2 * pad, justify="center")
+        self.caption.pack(fill="x", padx=pad, pady=(4, pad))
+        self.text.bind("<Key>", lambda e: "break")
+
+        # Drag anywhere to move; Escape closes.
+        for widget in (r, self.text, self.reading, self.caption):
+            widget.bind("<ButtonPress-1>", self._drag_start)
+            widget.bind("<B1-Motion>", self._drag_move)
+        r.bind("<Escape>", lambda e: self.close())
+        self._drag = (0, 0)
+        self._set_sentence("jptutor is listening…", dim=True)
+
+    # ------------------------------------------------------------- thread-safe API
+    def show_lesson(self, lesson: Lesson) -> None:
+        self._q.put(("lesson", lesson))
+
+    def on_utterance(self, u: Utterance) -> None:
+        self._q.put(("utt", u))
+
+    def finish(self) -> None:
+        self._q.put(("finish",))
+
+    def close(self) -> None:
+        self._q.put(("close",))
+
+    # ------------------------------------------------------------- main thread
+    def run(self, worker: Callable[["Overlay"], None]) -> None:
+        """Run `worker(self)` on a thread while the window runs on this (main) thread."""
+
+        def body():
+            try:
+                worker(self)
+            except BaseException as e:  # surfaced after mainloop ends
+                self._worker_error = e
+            finally:
+                self._done.set()
+                self._q.put(("close",))
+
+        threading.Thread(target=body, name="jptutor-tutor", daemon=True).start()
+        self.root.deiconify()
+        self.root.after(40, self._poll)
+        try:
+            self.root.mainloop()
+        except KeyboardInterrupt:
+            pass
+        if self._worker_error and not isinstance(self._worker_error, KeyboardInterrupt):
+            raise self._worker_error
+
+    def _poll(self) -> None:
+        try:
+            while True:
+                event = self._q.get_nowait()
+                if event[0] == "close":
+                    self.root.quit()
+                    return
+                self._apply(event)
+        except queue.Empty:
+            pass
+        self.root.after(40, self._poll)
+
+    def _apply(self, event: tuple) -> None:
+        kind = event[0]
+        if kind == "lesson":
+            lesson: Lesson = event[1]
+            self._sentence = lesson.japanese
+            self._set_sentence(lesson.japanese)
+            self.reading.configure(text="")
+            self.caption.configure(text="")
+        elif kind == "utt":
+            u: Utterance = event[1]
+            self._highlight(u.span)
+            self.reading.configure(text=u.reading if (u.reading and u.span) else "")
+            # English is captioned; a Japanese utterance clears the caption so a stale
+            # explanation never sits under a different highlight.
+            self.caption.configure(text=u.text if u.lang == "en" else "")
+        elif kind == "finish":
+            self._highlight(None)
+            self.reading.configure(text="")
+            self.caption.configure(text="")
+
+    def _set_sentence(self, sentence: str, dim: bool = False) -> None:
+        t = self.text
+        t.configure(state="normal")
+        t.delete("1.0", "end")
+        t.insert("1.0", sentence, ("center",))
+        t.configure(fg=DIM if dim else FG, height=max(1, min(3, 1 + len(sentence) // 22)))
+        t.configure(state="disabled")
+
+    def _highlight(self, span) -> None:
+        t = self.text
+        t.tag_remove("hl", "1.0", "end")
+        if span:
+            a, b = span
+            t.tag_add("hl", f"1.0+{a}c", f"1.0+{b}c")
+
+    def _drag_start(self, e) -> None:
+        self._drag = (e.x_root - self.root.winfo_x(), e.y_root - self.root.winfo_y())
+
+    def _drag_move(self, e) -> None:
+        dx, dy = self._drag
+        self.root.geometry(f"+{e.x_root - dx}+{e.y_root - dy}")

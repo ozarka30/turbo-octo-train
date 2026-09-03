@@ -13,6 +13,7 @@ from PIL import Image
 
 from .claude_client import TutorBackend
 from .config import Settings
+from .display import Display, DisplaySpeaker, NullDisplay
 from .lesson import Lesson, OcrLine, contains_japanese, split_sentences
 from .script import build_script
 from .tts import Speaker
@@ -63,9 +64,19 @@ def pick_lines(lines: Iterable[OcrLine], min_chars: int = 2) -> List[OcrLine]:
 
 
 class TutorPipeline:
-    def __init__(self, tutor: TutorBackend, speaker: Speaker, settings: Settings, *, context: str = "", full_breakdown: bool = True):
+    def __init__(
+        self,
+        tutor: TutorBackend,
+        speaker: Speaker,
+        settings: Settings,
+        *,
+        context: str = "",
+        full_breakdown: bool = True,
+        display: Optional[Display] = None,
+    ):
         self.tutor = tutor
-        self.speaker = speaker
+        self.display = display or NullDisplay()
+        self.speaker = DisplaySpeaker(speaker, self.display)
         self.settings = settings
         self.context = context
         self.full_breakdown = full_breakdown
@@ -85,7 +96,11 @@ class TutorPipeline:
         self.lessons.append(lesson)
         self.history.append(f"Sentence: {lesson.japanese} = {lesson.english}")
         self.history.extend(f"  {c.japanese} ({c.reading}) = {c.meaning}" for c in lesson.chunks)
-        self.speaker.speak_all(build_script(lesson, full_breakdown=self.full_breakdown))
+        self.display.show_lesson(lesson)
+        try:
+            self.speaker.speak_all(build_script(lesson, full_breakdown=self.full_breakdown))
+        finally:
+            self.display.finish()
         return lesson
 
     def teach_line(self, text: str, speaker: str = "") -> List[Lesson]:

@@ -40,6 +40,11 @@ class Settings:
     stability_frames: int = 2
     change_threshold: float = 0.02
 
+    overlay: bool = True
+    overlay_geometry: Optional[Region] = None  # x,y,w,h; default bottom centre of the primary screen
+    overlay_font_size: int = 34
+    overlay_opacity: float = 0.88
+
     cache_dir: Path = field(default_factory=lambda: Path(".jptutor-cache"))
     max_queue: int = 3
     remember_lines: int = 200
@@ -60,6 +65,11 @@ class Settings:
             s.region = parse_region(e["JPTUTOR_REGION"])
         s.poll_interval = float(e.get("JPTUTOR_POLL_INTERVAL", s.poll_interval))
         s.change_threshold = float(e.get("JPTUTOR_CHANGE_THRESHOLD", s.change_threshold))
+        s.overlay = e.get("JPTUTOR_OVERLAY", "1") not in ("0", "false", "no", "off")
+        if e.get("JPTUTOR_OVERLAY_GEOMETRY"):
+            s.overlay_geometry = parse_region(e["JPTUTOR_OVERLAY_GEOMETRY"])
+        s.overlay_font_size = int(e.get("JPTUTOR_OVERLAY_FONT_SIZE", s.overlay_font_size))
+        s.overlay_opacity = float(e.get("JPTUTOR_OVERLAY_OPACITY", s.overlay_opacity))
         if e.get("JPTUTOR_CACHE_DIR"):
             s.cache_dir = Path(e["JPTUTOR_CACHE_DIR"])
         return s

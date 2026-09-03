@@ -15,6 +15,7 @@ It is three parts glued together:
 | Vision | Grabs the dialogue box, notices when the text changes, OCRs | `mss` + a cheap frame diff, then Claude vision   |
 | AI     | Translates and writes the lesson                            | Claude Opus 5 with structured output (a `Lesson` JSON) |
 | Voice  | Speaks Japanese and English                                 | `edge-tts` neural voices, cached to disk         |
+| Overlay | Shows the sentence and highlights the piece being spoken   | always-on-top tkinter window, synced to the audio |
 
 ## Setup
 
@@ -71,6 +72,16 @@ jptutor watch --level intermediate                  # beginner | intermediate | 
 
 You can also run the pipeline on saved screenshots: `jptutor image shot1.png shot2.png`.
 
+### The overlay
+
+While a lesson plays, a small always-on-top window shows the sentence with the current piece highlighted, its kana reading underneath, and the English being spoken as a caption. The highlight follows the audio: the whole line while it is read, each chunk while it is explained, nothing while a rebuild question waits for your answer, then the answer.
+
+- Drag it anywhere; press Esc on it to quit.
+- It sits at the bottom centre of the primary screen by default. Move or resize it with `JPTUTOR_OVERLAY_GEOMETRY=x,y,w,h`, change the size with `JPTUTOR_OVERLAY_FONT_SIZE=40`, and the transparency with `JPTUTOR_OVERLAY_OPACITY=0.8`.
+- Turn it off with `--no-overlay` or `JPTUTOR_OVERLAY=0`. `--dry-run` prints the same highlights as text instead.
+- Run the game in windowed or borderless mode. An exclusive full-screen game draws over every other window, so the overlay will not show on top of it.
+- It needs tkinter, which ships with python.org and Windows Python; on Debian or Ubuntu install `python3-tk`.
+
 ### How a session behaves
 
 - Lines already taught are remembered and skipped when the game re-renders them.
@@ -98,6 +109,10 @@ All settings are environment variables (see `.env.example`); the common ones als
 | `JPTUTOR_REGION`           | whole screen         | `x,y,width,height` of the dialogue box               |
 | `JPTUTOR_POLL_INTERVAL`    | `0.5`                | Seconds between screen grabs                         |
 | `JPTUTOR_CHANGE_THRESHOLD` | `0.02`               | Fraction of the region that must change to trigger   |
+| `JPTUTOR_OVERLAY`          | `1`                  | `0` to disable the highlight window                  |
+| `JPTUTOR_OVERLAY_GEOMETRY` | bottom centre        | `x,y,width,height` of the overlay                    |
+| `JPTUTOR_OVERLAY_FONT_SIZE`| `34`                 | Japanese font size in the overlay                    |
+| `JPTUTOR_OVERLAY_OPACITY`  | `0.88`               | Overlay transparency, 0 to 1                         |
 
 ## How the lesson is shaped
 
@@ -137,7 +152,9 @@ jptutor/
   claude_code_backend.py  subscription backend: the same two calls through `claude -p --json-schema`
   lesson.py         pydantic models: OcrResult, Lesson, Chunk, BuildStep
   prompts.py        system prompts
-  script.py         Lesson -> ordered Utterances (the Paul Noble pacing)
+  script.py         Lesson -> ordered Utterances (the Paul Noble pacing) with highlight spans
+  display.py        Display interface, console highlighter, speaker wrapper that syncs them
+  overlay.py        the on-screen highlight window (tkinter)
   tts.py            edge-tts synthesis, disk cache, playback; ConsoleSpeaker for dry runs
   pipeline.py       OCR -> filter -> dedupe -> lesson -> speak; background FrameWorker
   cli.py            the `jptutor` command
